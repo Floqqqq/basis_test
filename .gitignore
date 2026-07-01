@@ -1,0 +1,8 @@
+.DS_Store
+.idea/
+__MACOSX/
+
+coverage.out
+coverage.txt
+
+.env

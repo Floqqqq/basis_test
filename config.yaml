@@ -1,0 +1,4 @@
+app_port: "8080"
+mysql_dsn: "root:root@tcp(localhost:3306)/task_manager?parseTime=true"
+redis_addr: "localhost:6379"
+jwt_secret: "secret"
