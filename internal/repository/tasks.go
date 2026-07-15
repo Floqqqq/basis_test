@@ -88,8 +88,11 @@ func (r *TaskRepository) List(ctx context.Context, teamID int64, status string, 
 	return tasks, nil
 }
 
-func (r *TaskRepository) GetByID(ctx context.Context, id int64) (*models.Task, error) {
-	return r.getByID(ctx, r.db, id)
+func (r *TaskRepository) GetByID(
+	ctx context.Context,
+	id int64,
+) (*models.Task, error) {
+	return r.getByIDWithQuerier(ctx, r.db, id)
 }
 
 type taskScanner interface {
@@ -97,15 +100,25 @@ type taskScanner interface {
 }
 
 type queryer interface {
-	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+	QueryRowContext(
+		ctx context.Context,
+		query string,
+		args ...any,
+	) *sql.Row
 }
 
-func (r *TaskRepository) getByID(ctx context.Context, q queryer, id int64) (*models.Task, error) {
+func (r *TaskRepository) getByIDWithQuerier(
+	ctx context.Context,
+	q queryer,
+	id int64,
+) (*models.Task, error) {
 	row := q.QueryRowContext(ctx, `
-			SELECT id, title, description, status, assignee_id, completed_at, team_id, created_by, created_at, updated_at
-			FROM tasks
-			WHERE id = ?
+		SELECT id, title, description, status, assignee_id,
+		       completed_at, team_id, created_by, created_at, updated_at
+		FROM tasks
+		WHERE id = ?
 	`, id)
+
 	return scanTask(row)
 }
 
@@ -157,7 +170,7 @@ func (r *TaskRepository) Update(ctx context.Context, userID int64, task models.T
 		}
 	}()
 
-	oldTask, err := r.getByID(ctx, tx, task.ID)
+	oldTask, err := r.getByIDWithQuerier(ctx, tx, task.ID)
 	if err != nil {
 		return fmt.Errorf("get task before update: %w", err)
 	}
