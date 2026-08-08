@@ -45,6 +45,20 @@ func (r *UserRepository) GetByEmail(ctx context.Context, email string) (*models.
 	return &u, nil
 }
 
+func (r *UserRepository) GetByID(ctx context.Context, userID int64) (*models.User, error) {
+	var u models.User
+
+	err := r.db.QueryRowContext(ctx,
+		`SELECT id, email, created_at FROM users WHERE id = $1`,
+		userID,
+	).Scan(&u.ID, &u.Email, &u.CreatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("get user by id: %w", err)
+	}
+
+	return &u, nil
+}
+
 func (r *UserRepository) Exists(ctx context.Context, userID int64) (bool, error) {
 	var exists bool
 

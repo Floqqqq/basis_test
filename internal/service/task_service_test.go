@@ -11,13 +11,16 @@ import (
 )
 
 type fakeTaskRepository struct {
-	createID  int64
-	createErr error
-	listTasks []models.Task
-	listErr   error
-	task      *models.Task
-	getErr    error
-	updateErr error
+	createID   int64
+	createErr  error
+	listTasks  []models.Task
+	listErr    error
+	task       *models.Task
+	getErr     error
+	updateErr  error
+	comments   []models.TaskComment
+	comment    *models.TaskComment
+	commentErr error
 
 	createdTask *models.Task
 	updatedTask *models.Task
@@ -52,6 +55,20 @@ func (r *fakeTaskRepository) Update(ctx context.Context, userID int64, task mode
 
 func (r *fakeTaskRepository) History(ctx context.Context, taskID int64) ([]models.TaskHistory, error) {
 	return nil, nil
+}
+
+func (r *fakeTaskRepository) CreateComment(ctx context.Context, taskID, userID int64, comment string) (*models.TaskComment, error) {
+	if r.commentErr != nil {
+		return nil, r.commentErr
+	}
+	return r.comment, nil
+}
+
+func (r *fakeTaskRepository) ListComments(ctx context.Context, taskID int64) ([]models.TaskComment, error) {
+	if r.commentErr != nil {
+		return nil, r.commentErr
+	}
+	return r.comments, nil
 }
 
 type fakeTaskCache struct {
@@ -240,8 +257,32 @@ func TestTaskServiceForbiddenUpdate(t *testing.T) {
 func TestTaskServiceGetByIDNotFound(t *testing.T) {
 	service := NewTaskService(&fakeTaskRepository{getErr: sql.ErrNoRows}, NewTaskPolicy(fakeTeamAccess{}), nil)
 
-	_, err := service.GetByID(context.Background(), 404)
+	_, err := service.GetByID(context.Background(), 1, 404)
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("GetByID() error = %v, want ErrNotFound", err)
+	}
+}
+
+func TestTaskServiceUpdateClearsAssignee(t *testing.T) {
+	assigneeID := int64(2)
+	taskRepo := &fakeTaskRepository{task: &models.Task{
+		ID:         10,
+		TeamID:     5,
+		CreatedBy:  1,
+		AssigneeID: &assigneeID,
+	}}
+	service := NewTaskService(taskRepo, NewTaskPolicy(fakeTeamAccess{
+		roles: map[int64]string{1: "owner"},
+	}), nil)
+
+	err := service.Update(context.Background(), 1, 10, TaskUpdate{
+		AssigneeIDSet: true,
+		AssigneeID:    nil,
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if taskRepo.updatedTask == nil || taskRepo.updatedTask.AssigneeID != nil {
+		t.Fatalf("updated task = %+v, want assignee cleared", taskRepo.updatedTask)
 	}
 }

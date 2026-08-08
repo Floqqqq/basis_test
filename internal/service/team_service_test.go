@@ -12,6 +12,7 @@ import (
 
 type fakeTeamRepository struct {
 	roles     map[int64]string
+	members   map[int64]bool
 	inviteErr error
 	invited   bool
 }
@@ -20,7 +21,11 @@ func (r *fakeTeamRepository) Create(ctx context.Context, name string, userID int
 	return 1, nil
 }
 
-func (r *fakeTeamRepository) ListByUser(ctx context.Context, userID int64) ([]models.Team, error) {
+func (r *fakeTeamRepository) ListByUser(ctx context.Context, userID int64) ([]models.TeamWithRole, error) {
+	return nil, nil
+}
+
+func (r *fakeTeamRepository) ListMembers(ctx context.Context, teamID int64) ([]models.TeamMember, error) {
 	return nil, nil
 }
 
@@ -30,6 +35,10 @@ func (r *fakeTeamRepository) GetUserRole(ctx context.Context, teamID, userID int
 		return "", sql.ErrNoRows
 	}
 	return role, nil
+}
+
+func (r *fakeTeamRepository) IsTeamMember(ctx context.Context, teamID, userID int64) (bool, error) {
+	return r.members[userID], nil
 }
 
 func (r *fakeTeamRepository) Invite(ctx context.Context, teamID, userID int64, role string) error {

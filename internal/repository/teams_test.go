@@ -49,11 +49,11 @@ func TestTeamRepositoryListByUserClosesRows(t *testing.T) {
 	repo := NewTeamRepository(db)
 	now := time.Now()
 
-	rows := sqlmock.NewRows([]string{"id", "name", "created_by", "created_at"}).
-		AddRow(int64(5), "Team", int64(10), now)
+	rows := sqlmock.NewRows([]string{"id", "name", "created_by", "created_at", "role"}).
+		AddRow(int64(5), "Team", int64(10), now, "owner")
 
 	mock.ExpectQuery(regexp.QuoteMeta(`
-		SELECT t.id, t.name, t.created_by, t.created_at
+		SELECT t.id, t.name, t.created_by, t.created_at, tm.role
 		FROM teams t
 		JOIN team_members tm ON tm.team_id = t.id
 		WHERE tm.user_id = $1
@@ -67,8 +67,8 @@ func TestTeamRepositoryListByUserClosesRows(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListByUser() error = %v", err)
 	}
-	if len(teams) != 1 || teams[0].ID != 5 {
-		t.Fatalf("teams = %+v, want one team with id 5", teams)
+	if len(teams) != 1 || teams[0].ID != 5 || teams[0].Role != "owner" {
+		t.Fatalf("teams = %+v, want one team with id 5 and owner role", teams)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet sql expectations: %v", err)

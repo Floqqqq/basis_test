@@ -13,8 +13,10 @@ import (
 
 type TeamRepository interface {
 	Create(ctx context.Context, name string, userID int64) (int64, error)
-	ListByUser(ctx context.Context, userID int64) ([]models.Team, error)
+	ListByUser(ctx context.Context, userID int64) ([]models.TeamWithRole, error)
+	ListMembers(ctx context.Context, teamID int64) ([]models.TeamMember, error)
 	GetUserRole(ctx context.Context, teamID, userID int64) (string, error)
+	IsTeamMember(ctx context.Context, teamID, userID int64) (bool, error)
 	Invite(ctx context.Context, teamID, userID int64, role string) error
 }
 
@@ -38,12 +40,28 @@ func (s *TeamService) Create(ctx context.Context, userID int64, name string) (in
 	return teamID, nil
 }
 
-func (s *TeamService) List(ctx context.Context, userID int64) ([]models.Team, error) {
+func (s *TeamService) List(ctx context.Context, userID int64) ([]models.TeamWithRole, error) {
 	teams, err := s.teams.ListByUser(ctx, userID)
 	if err != nil {
 		return nil, fmt.Errorf("list teams: %w", err)
 	}
 	return teams, nil
+}
+
+func (s *TeamService) ListMembers(ctx context.Context, userID, teamID int64) ([]models.TeamMember, error) {
+	isMember, err := s.teams.IsTeamMember(ctx, teamID, userID)
+	if err != nil {
+		return nil, fmt.Errorf("check team membership: %w", err)
+	}
+	if !isMember {
+		return nil, ErrForbidden
+	}
+
+	members, err := s.teams.ListMembers(ctx, teamID)
+	if err != nil {
+		return nil, fmt.Errorf("list team members: %w", err)
+	}
+	return members, nil
 }
 
 func (s *TeamService) Invite(ctx context.Context, currentUserID, teamID, invitedUserID int64, role string) error {

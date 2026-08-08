@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"task-manager/internal/models"
 )
@@ -43,6 +44,10 @@ func (p *TaskPolicy) CanViewTaskHistory(ctx context.Context, task *models.Task, 
 	return p.canAccessTask(ctx, task, userID)
 }
 
+func (p *TaskPolicy) CanViewTask(ctx context.Context, task *models.Task, userID int64) (bool, error) {
+	return p.IsTeamMember(ctx, task.TeamID, userID)
+}
+
 func (p *TaskPolicy) canAccessTask(ctx context.Context, task *models.Task, userID int64) (bool, error) {
 	role, err := p.teams.GetUserRole(ctx, task.TeamID, userID)
 	if err != nil {
@@ -71,6 +76,8 @@ type TaskRepository interface {
 	GetByID(ctx context.Context, id int64) (*models.Task, error)
 	Update(ctx context.Context, userID int64, task models.Task) error
 	History(ctx context.Context, taskID int64) ([]models.TaskHistory, error)
+	CreateComment(ctx context.Context, taskID, userID int64, comment string) (*models.TaskComment, error)
+	ListComments(ctx context.Context, taskID int64) ([]models.TaskComment, error)
 }
 
 type TaskCache interface {
@@ -80,10 +87,11 @@ type TaskCache interface {
 }
 
 type TaskUpdate struct {
-	Title       *string
-	Description *string
-	Status      *string
-	AssigneeID  *int64
+	Title         *string
+	Description   *string
+	Status        *string
+	AssigneeID    *int64
+	AssigneeIDSet bool
 }
 
 type TaskService struct {
@@ -127,13 +135,29 @@ func (s *TaskService) Create(ctx context.Context, userID int64, task models.Task
 	return taskID, nil
 }
 
-func (s *TaskService) GetByID(ctx context.Context, taskID int64) (*models.Task, error) {
+func (s *TaskService) getByID(ctx context.Context, taskID int64) (*models.Task, error) {
 	task, err := s.tasks.GetByID(ctx, taskID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}
 		return nil, fmt.Errorf("get task by id: %w", err)
+	}
+	return task, nil
+}
+
+func (s *TaskService) GetByID(ctx context.Context, userID, taskID int64) (*models.Task, error) {
+	task, err := s.getByID(ctx, taskID)
+	if err != nil {
+		return nil, err
+	}
+
+	canView, err := s.policy.CanViewTask(ctx, task, userID)
+	if err != nil {
+		return nil, fmt.Errorf("check task permissions: %w", err)
+	}
+	if !canView {
+		return nil, ErrForbidden
 	}
 	return task, nil
 }
@@ -187,7 +211,7 @@ func (s *TaskService) List(ctx context.Context, userID, teamID int64, status str
 }
 
 func (s *TaskService) Update(ctx context.Context, userID, taskID int64, update TaskUpdate) error {
-	task, err := s.GetByID(ctx, taskID)
+	task, err := s.getByID(ctx, taskID)
 	if err != nil {
 		return err
 	}
@@ -210,7 +234,7 @@ func (s *TaskService) Update(ctx context.Context, userID, taskID int64, update T
 	if update.Status != nil {
 		updated.Status = *update.Status
 	}
-	if update.AssigneeID != nil {
+	if update.AssigneeIDSet {
 		assigneeValid, err := s.policy.IsAssigneeValidForTeam(ctx, task.TeamID, update.AssigneeID)
 		if err != nil {
 			return fmt.Errorf("check assignee: %w", err)
@@ -230,7 +254,7 @@ func (s *TaskService) Update(ctx context.Context, userID, taskID int64, update T
 }
 
 func (s *TaskService) History(ctx context.Context, userID, taskID int64) ([]models.TaskHistory, error) {
-	task, err := s.GetByID(ctx, taskID)
+	task, err := s.getByID(ctx, taskID)
 	if err != nil {
 		return nil, err
 	}
@@ -248,6 +272,56 @@ func (s *TaskService) History(ctx context.Context, userID, taskID int64) ([]mode
 		return nil, fmt.Errorf("list task history: %w", err)
 	}
 	return history, nil
+}
+
+func (s *TaskService) CreateComment(ctx context.Context, userID, taskID int64, comment string) (*models.TaskComment, error) {
+	comment = strings.TrimSpace(comment)
+	if comment == "" {
+		return nil, fmt.Errorf("%w: comment is required", ErrInvalidInput)
+	}
+	if len([]rune(comment)) > 4000 {
+		return nil, fmt.Errorf("%w: comment is too long", ErrInvalidInput)
+	}
+
+	task, err := s.getByID(ctx, taskID)
+	if err != nil {
+		return nil, err
+	}
+
+	canView, err := s.policy.CanViewTask(ctx, task, userID)
+	if err != nil {
+		return nil, fmt.Errorf("check task permissions: %w", err)
+	}
+	if !canView {
+		return nil, ErrForbidden
+	}
+
+	created, err := s.tasks.CreateComment(ctx, taskID, userID, comment)
+	if err != nil {
+		return nil, fmt.Errorf("create task comment: %w", err)
+	}
+	return created, nil
+}
+
+func (s *TaskService) ListComments(ctx context.Context, userID, taskID int64) ([]models.TaskComment, error) {
+	task, err := s.getByID(ctx, taskID)
+	if err != nil {
+		return nil, err
+	}
+
+	canView, err := s.policy.CanViewTask(ctx, task, userID)
+	if err != nil {
+		return nil, fmt.Errorf("check task permissions: %w", err)
+	}
+	if !canView {
+		return nil, ErrForbidden
+	}
+
+	comments, err := s.tasks.ListComments(ctx, taskID)
+	if err != nil {
+		return nil, fmt.Errorf("list task comments: %w", err)
+	}
+	return comments, nil
 }
 
 func (s *TaskService) invalidateTeamCache(ctx context.Context, teamID int64) {

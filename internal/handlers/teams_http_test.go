@@ -7,7 +7,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"regexp"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
 
@@ -67,6 +69,100 @@ func TestTeamHandlerInviteForbiddenWhenRoleMissing(t *testing.T) {
 
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestTeamHandlerMembersForbiddenForOutsider(t *testing.T) {
+	handler, mock, _ := newTeamHandlerForTest(t)
+
+	mock.ExpectQuery(regexp.QuoteMeta(`
+		SELECT EXISTS(
+			SELECT 1 FROM team_members WHERE team_id = $1 AND user_id = $2
+		)
+	`)).
+		WithArgs(int64(5), int64(42)).
+		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
+
+	rec := httptest.NewRecorder()
+	req := teamRequest(http.MethodGet, "/teams/5/members", "")
+	req = withURLParam(req, "id", "5")
+	handler.Members(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestTeamHandlerMembersForTeamMember(t *testing.T) {
+	handler, mock, _ := newTeamHandlerForTest(t)
+	now := time.Now()
+
+	mock.ExpectQuery(regexp.QuoteMeta(`
+		SELECT EXISTS(
+			SELECT 1 FROM team_members WHERE team_id = $1 AND user_id = $2
+		)
+	`)).
+		WithArgs(int64(5), int64(42)).
+		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(true))
+	mock.ExpectQuery(regexp.QuoteMeta(`
+		SELECT u.id, u.email, tm.role, tm.created_at
+		FROM team_members tm
+		JOIN users u ON u.id = tm.user_id
+		WHERE tm.team_id = $1
+		ORDER BY tm.created_at, u.id
+	`)).
+		WithArgs(int64(5)).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "email", "role", "created_at"}).
+			AddRow(int64(42), "owner@example.com", "owner", now))
+
+	rec := httptest.NewRecorder()
+	req := teamRequest(http.MethodGet, "/teams/5/members", "")
+	req = withURLParam(req, "id", "5")
+	handler.Members(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if !strings.Contains(rec.Body.String(), `"role":"owner"`) {
+		t.Fatalf("response = %s, want owner role", rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "password") {
+		t.Fatalf("response contains password field: %s", rec.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestTeamHandlerListIncludesCurrentUserRole(t *testing.T) {
+	handler, mock, _ := newTeamHandlerForTest(t)
+	now := time.Now()
+
+	mock.ExpectQuery(regexp.QuoteMeta(`
+		SELECT t.id, t.name, t.created_by, t.created_at, tm.role
+		FROM teams t
+		JOIN team_members tm ON tm.team_id = t.id
+		WHERE tm.user_id = $1
+		ORDER BY t.created_at DESC
+	`)).
+		WithArgs(int64(42)).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "created_by", "created_at", "role"}).
+			AddRow(int64(5), "Backend", int64(42), now, "owner"))
+
+	rec := httptest.NewRecorder()
+	handler.List(rec, teamRequest(http.MethodGet, "/teams", ""))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if !strings.Contains(rec.Body.String(), `"role":"owner"`) {
+		t.Fatalf("response = %s, want owner role", rec.Body.String())
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet sql expectations: %v", err)

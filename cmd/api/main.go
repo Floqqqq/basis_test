@@ -74,14 +74,20 @@ func main() {
 			r.Use(middleware.Auth(authService))
 			r.Use(middleware.RateLimit(redisClient))
 
+			r.Get("/me", authHandler.Me)
+
 			r.Post("/teams", teamHandler.Create)
 			r.Get("/teams", teamHandler.List)
+			r.Get("/teams/{id}/members", teamHandler.Members)
 			r.Post("/teams/{id}/invite", teamHandler.Invite)
 
 			r.Post("/tasks", taskHandler.Create)
 			r.Get("/tasks", taskHandler.List)
+			r.Get("/tasks/{id}", taskHandler.Get)
 			r.Put("/tasks/{id}", taskHandler.Update)
 			r.Get("/tasks/{id}/history", taskHandler.History)
+			r.Post("/tasks/{id}/comments", taskHandler.CreateComment)
+			r.Get("/tasks/{id}/comments", taskHandler.ListComments)
 
 			r.Get("/reports/team-stats", reportHandler.TeamStats)
 			r.Get("/reports/top-users", reportHandler.TopUsers)

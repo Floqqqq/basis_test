@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -128,10 +129,46 @@ func (h *TaskHandler) List(w http.ResponseWriter, r *http.Request) {
 }
 
 type updateTaskRequest struct {
-	Title       *string `json:"title"`
-	Description *string `json:"description"`
-	Status      *string `json:"status"`
-	AssigneeID  *int64  `json:"assignee_id"`
+	Title       *string       `json:"title"`
+	Description *string       `json:"description"`
+	Status      *string       `json:"status"`
+	AssigneeID  optionalInt64 `json:"assignee_id"`
+}
+
+type optionalInt64 struct {
+	Set   bool
+	Value *int64
+}
+
+func (v *optionalInt64) UnmarshalJSON(data []byte) error {
+	v.Set = true
+	if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
+		v.Value = nil
+		return nil
+	}
+
+	var value int64
+	if err := json.Unmarshal(data, &value); err != nil {
+		return err
+	}
+	v.Value = &value
+	return nil
+}
+
+func (h *TaskHandler) Get(w http.ResponseWriter, r *http.Request) {
+	taskID, err := parseIDParam(r, "id")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid task id")
+		return
+	}
+
+	task, err := h.tasks.GetByID(r.Context(), middleware.GetUserID(r), taskID)
+	if err != nil {
+		writeServiceError(w, err, "cannot get task")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, task)
 }
 
 func (h *TaskHandler) Update(w http.ResponseWriter, r *http.Request) {
@@ -149,7 +186,7 @@ func (h *TaskHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.Title == nil && req.Description == nil && req.Status == nil && req.AssigneeID == nil {
+	if req.Title == nil && req.Description == nil && req.Status == nil && !req.AssigneeID.Set {
 		writeError(w, http.StatusBadRequest, "no fields to update")
 		return
 	}
@@ -181,12 +218,13 @@ func (h *TaskHandler) Update(w http.ResponseWriter, r *http.Request) {
 		update.Status = req.Status
 	}
 
-	if req.AssigneeID != nil {
-		if *req.AssigneeID <= 0 {
+	if req.AssigneeID.Set {
+		if req.AssigneeID.Value != nil && *req.AssigneeID.Value <= 0 {
 			writeError(w, http.StatusBadRequest, "invalid assignee_id")
 			return
 		}
-		update.AssigneeID = req.AssigneeID
+		update.AssigneeID = req.AssigneeID.Value
+		update.AssigneeIDSet = true
 	}
 
 	if err := h.tasks.Update(r.Context(), userID, taskID, update); err != nil {
@@ -197,6 +235,60 @@ func (h *TaskHandler) Update(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{
 		"status": "updated",
 	})
+}
+
+const maxCommentLength = 4000
+
+type createCommentRequest struct {
+	Comment string `json:"comment"`
+}
+
+func (h *TaskHandler) CreateComment(w http.ResponseWriter, r *http.Request) {
+	taskID, err := parseIDParam(r, "id")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid task id")
+		return
+	}
+
+	var req createCommentRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+
+	req.Comment = strings.TrimSpace(req.Comment)
+	if req.Comment == "" {
+		writeError(w, http.StatusBadRequest, "comment is required")
+		return
+	}
+	if len([]rune(req.Comment)) > maxCommentLength {
+		writeError(w, http.StatusBadRequest, "comment is too long")
+		return
+	}
+
+	comment, err := h.tasks.CreateComment(r.Context(), middleware.GetUserID(r), taskID, req.Comment)
+	if err != nil {
+		writeServiceError(w, err, "cannot create comment")
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, comment)
+}
+
+func (h *TaskHandler) ListComments(w http.ResponseWriter, r *http.Request) {
+	taskID, err := parseIDParam(r, "id")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid task id")
+		return
+	}
+
+	comments, err := h.tasks.ListComments(r.Context(), middleware.GetUserID(r), taskID)
+	if err != nil {
+		writeServiceError(w, err, "cannot get comments")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, comments)
 }
 
 func (h *TaskHandler) History(w http.ResponseWriter, r *http.Request) {

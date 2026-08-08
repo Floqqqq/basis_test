@@ -169,6 +169,7 @@ SQL-миграции из директории `migrations/` автоматич�
 ```text
 migrations/001_init.sql
 migrations/002_indexes.sql
+migrations/003_task_comments_ordering_index.sql
 ```
 
 Если база уже была создана раньше, PostgreSQL не применит init scripts повторно. Чтобы пересоздать БД с нуля:
@@ -233,10 +234,11 @@ REDIS_ADDR: "redis:6379"
 migrations/001_init.sql
 ```
 
-Индексы создаются миграцией:
+Индексы создаются миграциями:
 
 ```text
 migrations/002_indexes.sql
+migrations/003_task_comments_ordering_index.sql
 ```
 
 Основные таблицы:
@@ -248,7 +250,7 @@ migrations/002_indexes.sql
 | `team_members`  | Связь пользователей и команд many-to-many, содержит роль пользователя в команде |
 | `tasks`         | Задачи команды                                                                  |
 | `task_history`  | История изменений задач                                                         |
-| `task_comments` | Комментарии к задачам, таблица есть в схеме как часть ТЗ                        |
+| `task_comments` | Комментарии к задачам                                                           |
 
 Связи:
 
@@ -424,6 +426,14 @@ curl -s -X POST http://localhost:18080/api/v1/login \
   -d '{"email":"user1@example.com","password":"pass123"}'
 ```
 
+## Текущий пользователь
+
+```text
+GET /api/v1/me
+```
+
+JWT нужен. Ответ содержит `id`, `email` и `created_at`. Хеш пароля в API не возвращается.
+
 ## Создание команды
 
 ```text
@@ -473,7 +483,8 @@ Response body:
     "id": 1,
     "name": "Backend Team",
     "created_by": 1,
-    "created_at": "2026-06-22T15:00:00Z"
+    "created_at": "2026-06-22T15:00:00Z",
+    "role": "owner"
   }
 ]
 ```
@@ -484,6 +495,14 @@ Response body:
 curl -s http://localhost:18080/api/v1/teams \
   -H "Authorization: Bearer $TOKEN"
 ```
+
+## Участники команды
+
+```text
+GET /api/v1/teams/{id}/members
+```
+
+JWT нужен. Endpoint доступен только участнику команды и возвращает `id`, `email`, `role` и `joined_at` каждого участника.
 
 ## Приглашение пользователя в команду
 
@@ -634,6 +653,14 @@ curl -s 'http://localhost:18080/api/v1/tasks?team_id=1&status=todo&assignee_id=2
   -H "Authorization: Bearer $TOKEN"
 ```
 
+## Получение задачи
+
+```text
+GET /api/v1/tasks/{id}
+```
+
+JWT нужен. Задачу может получить любой участник её команды.
+
 ## Обновление задачи
 
 ```text
@@ -663,6 +690,8 @@ Request body:
 Все поля опциональны, но нужно передать хотя бы одно поле.
 
 Если передан `assignee_id`, пользователь должен состоять в команде задачи.
+
+Значение `null` снимает исполнителя, а отсутствие поля оставляет текущего исполнителя без изменений.
 
 При изменении задачи записывается история изменений в таблицу `task_history`.
 
@@ -695,6 +724,32 @@ curl -s -X PUT http://localhost:18080/api/v1/tasks/1 \
   -H 'Content-Type: application/json' \
   -d '{"assignee_id":2}'
 ```
+
+Снять исполнителя:
+
+```bash
+curl -s -X PUT http://localhost:18080/api/v1/tasks/1 \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"assignee_id":null}'
+```
+
+## Комментарии задачи
+
+```text
+POST /api/v1/tasks/{id}/comments
+GET /api/v1/tasks/{id}/comments
+```
+
+JWT нужен. Читать и создавать комментарии могут участники команды задачи. Текст обязателен, максимальная длина - 4000 символов.
+
+```json
+{
+  "comment": "Нужно проверить этот кейс"
+}
+```
+
+Ответ содержит `id`, `task_id`, `user_id`, `email`, `text` и `created_at`.
 
 ## История задачи
 
@@ -1324,12 +1379,12 @@ curl -s http://localhost:18080/api/v1/teams \
 | Роли                       | Выполнено              | `owner/admin/member`                                                            |
 | Задачи                     | Выполнено              | Создание, список, обновление                                                    |
 | История изменений          | Выполнено              | `GET /api/v1/tasks/{id}/history`                                                |
-| Таблица комментариев       | Выполнено частично     | Таблица `task_comments` есть в схеме, отдельных comment API в ТЗ не требовалось |
+| Комментарии                | Выполнено              | `POST/GET /api/v1/tasks/{id}/comments`                                          |
 | JOIN 3+ таблиц + агрегация | Выполнено              | `GET /api/v1/reports/team-stats`                                                |
 | Оконная функция            | Выполнено              | `GET /api/v1/reports/top-users`                                                 |
 | Проверка связанных таблиц  | Выполнено              | `GET /api/v1/reports/invalid-assignees`                                         |
 | Redis cache TTL 5 минут    | Выполнено              | Кеш списка задач                                                                |
-| Индексы PostgreSQL         | Выполнено              | `migrations/002_indexes.sql`                                                    |
+| Индексы PostgreSQL         | Выполнено              | Миграции `002_indexes.sql` и `003_task_comments_ordering_index.sql`              |
 | Connection pooling         | Выполнено              | Настроено в `internal/db/postgres.go`                                           |
 | Пагинация на уровне БД     | Выполнено              | `LIMIT/OFFSET`                                                                  |
 | Unit-тесты                 | Выполнено              | Есть тесты сервисов, handlers, middleware, repository                           |

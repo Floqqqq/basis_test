@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -114,6 +115,180 @@ func TestTaskHandlerListReturnsStorageError(t *testing.T) {
 	if err := redisMock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet redis expectations: %v", err)
 	}
+}
+
+func TestTaskHandlerGetForbiddenForOutsider(t *testing.T) {
+	handler, mock, _, _ := newTaskHandlerForTest(t)
+	expectTaskByID(mock, 7)
+	mock.ExpectQuery(regexp.QuoteMeta(`
+		SELECT EXISTS(
+			SELECT 1 FROM team_members WHERE team_id = $1 AND user_id = $2
+		)
+	`)).
+		WithArgs(int64(5), int64(42)).
+		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
+
+	rec := httptest.NewRecorder()
+	req := requestWithBody(http.MethodGet, "/tasks/7", "")
+	req = withURLParam(req, "id", "7")
+	handler.Get(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestTaskHandlerGetForTeamMember(t *testing.T) {
+	handler, mock, _, _ := newTaskHandlerForTest(t)
+	expectTaskByID(mock, 7)
+	expectTaskMembership(mock, 5, 42, true)
+
+	rec := httptest.NewRecorder()
+	req := requestWithBody(http.MethodGet, "/tasks/7", "")
+	req = withURLParam(req, "id", "7")
+	handler.Get(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if !strings.Contains(rec.Body.String(), `"id":7`) {
+		t.Fatalf("response = %s, want task id", rec.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestTaskHandlerGetUnknownTask(t *testing.T) {
+	handler, mock, _, _ := newTaskHandlerForTest(t)
+	mock.ExpectQuery(regexp.QuoteMeta(`
+			SELECT id, title, description, status, assignee_id, completed_at, team_id, created_by, created_at, updated_at
+			FROM tasks
+			WHERE id = $1
+	`)).
+		WithArgs(int64(404)).
+		WillReturnError(sql.ErrNoRows)
+
+	rec := httptest.NewRecorder()
+	req := requestWithBody(http.MethodGet, "/tasks/404", "")
+	req = withURLParam(req, "id", "404")
+	handler.Get(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNotFound)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestTaskHandlerCreateComment(t *testing.T) {
+	handler, mock, _, _ := newTaskHandlerForTest(t)
+	now := time.Now()
+	expectTaskByID(mock, 7)
+	expectTaskMembership(mock, 5, 42, true)
+	mock.ExpectQuery(regexp.QuoteMeta(`
+		WITH inserted AS (
+			INSERT INTO task_comments(task_id, user_id, comment)
+			VALUES ($1, $2, $3)
+			RETURNING id, task_id, user_id, comment, created_at
+		)
+		SELECT i.id, i.task_id, i.user_id, u.email, i.comment, i.created_at
+		FROM inserted i
+		JOIN users u ON u.id = i.user_id
+	`)).
+		WithArgs(int64(7), int64(42), "Check this case").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "task_id", "user_id", "email", "comment", "created_at"}).
+			AddRow(int64(3), int64(7), int64(42), "user@example.com", "Check this case", now))
+
+	rec := httptest.NewRecorder()
+	req := requestWithBody(http.MethodPost, "/tasks/7/comments", `{"comment":"Check this case"}`)
+	req = withURLParam(req, "id", "7")
+	handler.CreateComment(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusCreated)
+	}
+	if !strings.Contains(rec.Body.String(), `"email":"user@example.com"`) {
+		t.Fatalf("response = %s, want comment author email", rec.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestTaskHandlerListComments(t *testing.T) {
+	handler, mock, _, _ := newTaskHandlerForTest(t)
+	now := time.Now()
+	expectTaskByID(mock, 7)
+	expectTaskMembership(mock, 5, 42, true)
+	mock.ExpectQuery(regexp.QuoteMeta(`
+		SELECT tc.id, tc.task_id, tc.user_id, u.email, tc.comment, tc.created_at
+		FROM task_comments tc
+		JOIN users u ON u.id = tc.user_id
+		WHERE tc.task_id = $1
+		ORDER BY tc.created_at, tc.id
+	`)).
+		WithArgs(int64(7)).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "task_id", "user_id", "email", "comment", "created_at"}).
+			AddRow(int64(3), int64(7), int64(42), "user@example.com", "Check this case", now))
+
+	rec := httptest.NewRecorder()
+	req := requestWithBody(http.MethodGet, "/tasks/7/comments", "")
+	req = withURLParam(req, "id", "7")
+	handler.ListComments(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if !strings.Contains(rec.Body.String(), `"text":"Check this case"`) {
+		t.Fatalf("response = %s, want comment", rec.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestTaskHandlerCreateCommentRejectsEmptyComment(t *testing.T) {
+	handler, mock, _, _ := newTaskHandlerForTest(t)
+
+	rec := httptest.NewRecorder()
+	req := requestWithBody(http.MethodPost, "/tasks/7/comments", `{"comment":"   "}`)
+	req = withURLParam(req, "id", "7")
+	handler.CreateComment(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func expectTaskByID(mock sqlmock.Sqlmock, taskID int64) {
+	now := time.Now()
+	mock.ExpectQuery(regexp.QuoteMeta(`
+			SELECT id, title, description, status, assignee_id, completed_at, team_id, created_by, created_at, updated_at
+			FROM tasks
+			WHERE id = $1
+	`)).
+		WithArgs(taskID).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "title", "description", "status", "assignee_id", "completed_at", "team_id", "created_by", "created_at", "updated_at",
+		}).AddRow(taskID, "Task", "Description", "todo", nil, nil, int64(5), int64(42), now, now))
+}
+
+func expectTaskMembership(mock sqlmock.Sqlmock, teamID, userID int64, isMember bool) {
+	mock.ExpectQuery(regexp.QuoteMeta(`
+		SELECT EXISTS(
+			SELECT 1 FROM team_members WHERE team_id = $1 AND user_id = $2
+		)
+	`)).
+		WithArgs(teamID, userID).
+		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(isMember))
 }
 
 func newTaskHandlerForTest(t *testing.T) (*TaskHandler, sqlmock.Sqlmock, redismock.ClientMock, *sql.DB) {

@@ -2,23 +2,41 @@ package handlers
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 
+	"task-manager/internal/middleware"
 	"task-manager/internal/repository"
 	"task-manager/internal/service"
 )
 
 type AuthHandler struct {
-	users *repository.UserRepository
-	auth  *service.AuthService
+	users       *repository.UserRepository
+	userService *service.UserService
+	auth        *service.AuthService
 }
 
 func NewAuthHandler(users *repository.UserRepository, auth *service.AuthService) *AuthHandler {
 	return &AuthHandler{
-		users: users,
-		auth:  auth,
+		users:       users,
+		userService: service.NewUserService(users),
+		auth:        auth,
 	}
+}
+
+func (h *AuthHandler) Me(w http.ResponseWriter, r *http.Request) {
+	user, err := h.userService.GetByID(r.Context(), middleware.GetUserID(r))
+	if err != nil {
+		if errors.Is(err, service.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "cannot get current user")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, user)
 }
 
 type authRequest struct {

@@ -298,3 +298,64 @@ func (r *TaskRepository) History(ctx context.Context, taskID int64) ([]models.Ta
 
 	return history, nil
 }
+
+func (r *TaskRepository) CreateComment(ctx context.Context, taskID, userID int64, comment string) (*models.TaskComment, error) {
+	var result models.TaskComment
+	err := r.db.QueryRowContext(ctx, `
+		WITH inserted AS (
+			INSERT INTO task_comments(task_id, user_id, comment)
+			VALUES ($1, $2, $3)
+			RETURNING id, task_id, user_id, comment, created_at
+		)
+		SELECT i.id, i.task_id, i.user_id, u.email, i.comment, i.created_at
+		FROM inserted i
+		JOIN users u ON u.id = i.user_id
+	`, taskID, userID, comment).Scan(
+		&result.ID,
+		&result.TaskID,
+		&result.UserID,
+		&result.Email,
+		&result.Text,
+		&result.CreatedAt,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("create task comment: %w", err)
+	}
+
+	return &result, nil
+}
+
+func (r *TaskRepository) ListComments(ctx context.Context, taskID int64) ([]models.TaskComment, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT tc.id, tc.task_id, tc.user_id, u.email, tc.comment, tc.created_at
+		FROM task_comments tc
+		JOIN users u ON u.id = tc.user_id
+		WHERE tc.task_id = $1
+		ORDER BY tc.created_at, tc.id
+	`, taskID)
+	if err != nil {
+		return nil, fmt.Errorf("list task comments: %w", err)
+	}
+	defer rows.Close()
+
+	comments := make([]models.TaskComment, 0)
+	for rows.Next() {
+		var comment models.TaskComment
+		if err := rows.Scan(
+			&comment.ID,
+			&comment.TaskID,
+			&comment.UserID,
+			&comment.Email,
+			&comment.Text,
+			&comment.CreatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan task comment: %w", err)
+		}
+		comments = append(comments, comment)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate task comments: %w", err)
+	}
+
+	return comments, nil
+}

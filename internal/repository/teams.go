@@ -62,9 +62,9 @@ func (r *TeamRepository) Create(ctx context.Context, name string, userID int64) 
 	return teamID, nil
 }
 
-func (r *TeamRepository) ListByUser(ctx context.Context, userID int64) ([]models.Team, error) {
+func (r *TeamRepository) ListByUser(ctx context.Context, userID int64) ([]models.TeamWithRole, error) {
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT t.id, t.name, t.created_by, t.created_at
+		SELECT t.id, t.name, t.created_by, t.created_at, tm.role
 		FROM teams t
 		JOIN team_members tm ON tm.team_id = t.id
 		WHERE tm.user_id = $1
@@ -75,11 +75,11 @@ func (r *TeamRepository) ListByUser(ctx context.Context, userID int64) ([]models
 	}
 	defer rows.Close()
 
-	teams := make([]models.Team, 0)
+	teams := make([]models.TeamWithRole, 0)
 
 	for rows.Next() {
-		var t models.Team
-		if err := rows.Scan(&t.ID, &t.Name, &t.CreatedBy, &t.CreatedAt); err != nil {
+		var t models.TeamWithRole
+		if err := rows.Scan(&t.ID, &t.Name, &t.CreatedBy, &t.CreatedAt, &t.Role); err != nil {
 			return nil, fmt.Errorf("scan team: %w", err)
 		}
 
@@ -91,6 +91,34 @@ func (r *TeamRepository) ListByUser(ctx context.Context, userID int64) ([]models
 	}
 
 	return teams, nil
+}
+
+func (r *TeamRepository) ListMembers(ctx context.Context, teamID int64) ([]models.TeamMember, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT u.id, u.email, tm.role, tm.created_at
+		FROM team_members tm
+		JOIN users u ON u.id = tm.user_id
+		WHERE tm.team_id = $1
+		ORDER BY tm.created_at, u.id
+	`, teamID)
+	if err != nil {
+		return nil, fmt.Errorf("list team members: %w", err)
+	}
+	defer rows.Close()
+
+	members := make([]models.TeamMember, 0)
+	for rows.Next() {
+		var member models.TeamMember
+		if err := rows.Scan(&member.ID, &member.Email, &member.Role, &member.JoinedAt); err != nil {
+			return nil, fmt.Errorf("scan team member: %w", err)
+		}
+		members = append(members, member)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate team members: %w", err)
+	}
+
+	return members, nil
 }
 
 func (r *TeamRepository) GetUserRole(ctx context.Context, teamID, userID int64) (string, error) {

@@ -63,6 +63,22 @@ func (h *TeamHandler) List(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, teams)
 }
 
+func (h *TeamHandler) Members(w http.ResponseWriter, r *http.Request) {
+	teamID, err := parseIDParam(r, "id")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid team id")
+		return
+	}
+
+	members, err := h.teams.ListMembers(r.Context(), middleware.GetUserID(r), teamID)
+	if err != nil {
+		writeServiceError(w, err, "cannot get team members")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, members)
+}
+
 type inviteRequest struct {
 	UserID int64  `json:"user_id"`
 	Role   string `json:"role"`

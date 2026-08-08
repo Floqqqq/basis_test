@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"encoding/json"
 	"testing"
 
 	"task-manager/internal/cache"
@@ -20,6 +21,24 @@ func TestTaskCacheKeyIncludesFiltersAndPagination(t *testing.T) {
 			t.Fatalf("duplicate cache key %q", key)
 		}
 		keys[key] = true
+	}
+}
+
+func TestUpdateTaskRequestDistinguishesNullAssignee(t *testing.T) {
+	var req updateTaskRequest
+	if err := json.Unmarshal([]byte(`{"assignee_id": null }`), &req); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if !req.AssigneeID.Set || req.AssigneeID.Value != nil {
+		t.Fatalf("assignee = %+v, want present null", req.AssigneeID)
+	}
+
+	var missing updateTaskRequest
+	if err := json.Unmarshal([]byte(`{}`), &missing); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if missing.AssigneeID.Set {
+		t.Fatalf("assignee = %+v, want absent", missing.AssigneeID)
 	}
 }
 

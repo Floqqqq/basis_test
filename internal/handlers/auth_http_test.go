@@ -3,10 +3,13 @@ package handlers
 import (
 	"bytes"
 	"database/sql"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
 
@@ -51,6 +54,53 @@ func TestAuthHandlerLoginInvalidCredentials(t *testing.T) {
 
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestAuthHandlerMe(t *testing.T) {
+	handler, mock, _ := newAuthHandlerForTest(t)
+	now := time.Now()
+
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT id, email, created_at FROM users WHERE id = $1`)).
+		WithArgs(int64(42)).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "email", "created_at"}).
+			AddRow(int64(42), "user@example.com", now))
+
+	rec := httptest.NewRecorder()
+	handler.Me(rec, requestWithBody(http.MethodGet, "/me", ""))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if strings.Contains(rec.Body.String(), "password") {
+		t.Fatalf("response contains password field: %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"email":"user@example.com"`) {
+		t.Fatalf("response = %s, want user email", rec.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestAuthHandlerMeReturnsStorageError(t *testing.T) {
+	handler, mock, _ := newAuthHandlerForTest(t)
+
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT id, email, created_at FROM users WHERE id = $1`)).
+		WithArgs(int64(42)).
+		WillReturnError(errors.New("db failed"))
+
+	rec := httptest.NewRecorder()
+	handler.Me(rec, requestWithBody(http.MethodGet, "/me", ""))
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusInternalServerError)
+	}
+	if !strings.Contains(rec.Body.String(), `"error":`) {
+		t.Fatalf("response = %s, want JSON error", rec.Body.String())
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet sql expectations: %v", err)
