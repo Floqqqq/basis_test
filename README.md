@@ -1,8 +1,8 @@
-# Task Manager API
+# Task Manager
 
-REST API сервис для управления задачами в командах.
+Web-приложение и REST API для управления задачами в командах.
 
-Проект реализован на Go и поддерживает регистрацию пользователей, JWT-аутентификацию, командную работу, ролевую модель `owner/admin/member`, создание и обновление задач, историю изменений задач, Redis-кеширование, rate limiting, Prometheus-метрики, OpenTelemetry tracing, SQL-отчёты на PostgreSQL, Docker Compose и тесты.
+Проект состоит из Go backend и React frontend. Он поддерживает регистрацию пользователей, JWT-аутентификацию, командную работу, ролевую модель `owner/admin/member`, создание и обновление задач, комментарии, историю изменений задач, Redis-кеширование, rate limiting, Prometheus-метрики, OpenTelemetry tracing, SQL-отчёты на PostgreSQL, Docker Compose и тесты.
 
 ## Описание проекта
 
@@ -52,6 +52,8 @@ REST API сервис для управления задачами в коман
 | Компонент             | Технология                          |
 | --------------------- | ----------------------------------- |
 | Язык                  | Go 1.22                             |
+| Frontend              | React, TypeScript, Vite             |
+| Работа с API          | TanStack Query, React Router        |
 | HTTP router           | `github.com/go-chi/chi/v5`          |
 | База данных           | PostgreSQL 16                       |
 | PostgreSQL driver     | `github.com/jackc/pgx/v5`           |
@@ -85,6 +87,10 @@ REST API сервис для управления задачами в коман
 ├── migrations/
 │   ├── 001_init.sql
 │   └── 002_indexes.sql
+├── frontend/
+│   ├── src/
+│   ├── Dockerfile
+│   └── package.json
 ├── config.yaml
 ├── docker-compose.yml
 ├── Dockerfile
@@ -110,6 +116,7 @@ REST API сервис для управления задачами в коман
 | `internal/service`    | Бизнес-логика, JWT/bcrypt, права доступа, circuit breaker                                              |
 | `internal/telemetry`  | OpenTelemetry SDK, OTLP exporter и HTTP instrumentation                                                |
 | `migrations`          | SQL-схема, связи и индексы                                                                             |
+| `frontend`            | React-приложение: страницы, API client, маршрутизация и стили                                          |
 
 ## Быстрый запуск
 
@@ -119,7 +126,13 @@ REST API сервис для управления задачами в коман
 docker compose up --build
 ```
 
-После запуска API доступно по адресу:
+После запуска интерфейс доступен по адресу:
+
+```text
+http://localhost:3000
+```
+
+API доступно по адресу:
 
 ```text
 http://localhost:18080
@@ -129,10 +142,21 @@ http://localhost:18080
 
 На хост по умолчанию публикуется порт `18080`, чтобы не конфликтовать с локальными приложениями на `8080`.
 
+### Запуск frontend для разработки
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Vite откроет интерфейс на `http://localhost:5173` и перенаправит запросы `/api` на backend по адресу `http://localhost:18080`.
+
 ## Порты по умолчанию
 
 | Сервис | Внутренний порт | Host-порт |
 | ------ | --------------: | --------: |
+| Frontend |          `80` |    `3000` |
 | API    |          `8080` |   `18080` |
 | PostgreSQL |       `5432` |    `5433` |
 | Redis  |          `6379` |    `6380` |
@@ -154,7 +178,7 @@ APP_HOST_PORT=8080 docker compose up --build
 Если нужно поменять все host-порты:
 
 ```bash
-APP_HOST_PORT=18080 POSTGRES_HOST_PORT=5433 REDIS_HOST_PORT=6380 docker compose up --build
+FRONTEND_HOST_PORT=3000 APP_HOST_PORT=18080 POSTGRES_HOST_PORT=5433 REDIS_HOST_PORT=6380 docker compose up --build
 ```
 
 ## Docker Compose
@@ -162,6 +186,7 @@ APP_HOST_PORT=18080 POSTGRES_HOST_PORT=5433 REDIS_HOST_PORT=6380 docker compose 
 В `docker-compose.yml` поднимаются:
 
 * приложение Go;
+* React frontend с Nginx;
 * PostgreSQL 16;
 * Redis 7;
 * OpenTelemetry Collector 0.157.0;
@@ -220,6 +245,7 @@ ENV-переменные имеют приоритет над YAML.
 | `CONFIG_PATH`     | Путь к YAML-конфигу                          | `config.yaml`                                               |
 | `APP_PORT`        | Порт HTTP-сервера внутри контейнера/процесса | `8080`                                                      |
 | `APP_HOST_PORT`   | Host-порт API в Docker Compose               | `18080`                                                     |
+| `FRONTEND_HOST_PORT` | Host-порт frontend в Docker Compose       | `3000`                                                      |
 | `POSTGRES_DSN`       | DSN подключения к PostgreSQL                 | `postgres://postgres:postgres@localhost:5432/task_manager?sslmode=disable` |
 | `POSTGRES_HOST_PORT` | Host-порт PostgreSQL в Docker Compose        | `5433`                                                      |
 | `REDIS_ADDR`      | Адрес Redis для приложения                   | `localhost:6379`                                            |
