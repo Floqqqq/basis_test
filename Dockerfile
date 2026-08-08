@@ -7,7 +7,7 @@ RUN go mod download
 COPY . .
 RUN go build -o app ./cmd/api
 
-FROM alpine:latest
+FROM alpine:3.20
 WORKDIR /app
 COPY --from=builder /app/app .
 CMD ["./app"]

@@ -2,3 +2,7 @@ app_port: "8080"
 postgres_dsn: "postgres://postgres:postgres@localhost:5433/task_manager?sslmode=disable"
 redis_addr: "localhost:6379"
 jwt_secret: "secret"
+otel_enabled: false
+otel_service_name: "task-manager-api"
+otel_exporter_otlp_endpoint: "localhost:4317"
+otel_exporter_otlp_insecure: true

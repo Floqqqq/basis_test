@@ -2,7 +2,7 @@
 
 REST API сервис для управления задачами в командах.
 
-Проект реализован на Go и поддерживает регистрацию пользователей, JWT-аутентификацию, командную работу, ролевую модель `owner/admin/member`, создание и обновление задач, историю изменений задач, Redis-кеширование, rate limiting, Prometheus-метрики, SQL-отчёты на PostgreSQL, Docker Compose и тесты.
+Проект реализован на Go и поддерживает регистрацию пользователей, JWT-аутентификацию, командную работу, ролевую модель `owner/admin/member`, создание и обновление задач, историю изменений задач, Redis-кеширование, rate limiting, Prometheus-метрики, OpenTelemetry tracing, SQL-отчёты на PostgreSQL, Docker Compose и тесты.
 
 ## Описание проекта
 
@@ -108,6 +108,7 @@ REST API сервис для управления задачами в коман
 | `internal/models`     | Основные модели данных                                                                                 |
 | `internal/repository` | Работа с PostgreSQL                                                                                    |
 | `internal/service`    | Бизнес-логика, JWT/bcrypt, права доступа, circuit breaker                                              |
+| `internal/telemetry`  | OpenTelemetry SDK, OTLP exporter и HTTP instrumentation                                                |
 | `migrations`          | SQL-схема, связи и индексы                                                                             |
 
 ## Быстрый запуск
@@ -135,6 +136,8 @@ http://localhost:18080
 | API    |          `8080` |   `18080` |
 | PostgreSQL |       `5432` |    `5433` |
 | Redis  |          `6379` |    `6380` |
+| OTLP Collector | `4317` | `4317` |
+| Jaeger UI |       `16686` | `16686` |
 
 Если нужно поменять host-порт API:
 
@@ -160,7 +163,9 @@ APP_HOST_PORT=18080 POSTGRES_HOST_PORT=5433 REDIS_HOST_PORT=6380 docker compose 
 
 * приложение Go;
 * PostgreSQL 16;
-* Redis 7.
+* Redis 7;
+* OpenTelemetry Collector 0.157.0;
+* Jaeger 1.76.0.
 
 PostgreSQL и Redis имеют healthcheck. Приложение стартует после того, как PostgreSQL и Redis становятся healthy.
 
@@ -196,6 +201,10 @@ app_port: "8080"
 postgres_dsn: "postgres://postgres:postgres@localhost:5433/task_manager?sslmode=disable"
 redis_addr: "localhost:6379"
 jwt_secret: "secret"
+otel_enabled: false
+otel_service_name: "task-manager-api"
+otel_exporter_otlp_endpoint: "localhost:4317"
+otel_exporter_otlp_insecure: true
 ```
 
 Путь к YAML-файлу можно переопределить:
@@ -216,6 +225,12 @@ ENV-переменные имеют приоритет над YAML.
 | `REDIS_ADDR`      | Адрес Redis для приложения                   | `localhost:6379`                                            |
 | `REDIS_HOST_PORT` | Host-порт Redis в Docker Compose             | `6380`                                                      |
 | `JWT_SECRET`      | Секрет для подписи JWT                       | `secret`                                                    |
+| `OTEL_ENABLED` | Включить отправку traces | `false` |
+| `OTEL_SERVICE_NAME` | Имя сервиса в tracing backend | `task-manager-api` |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | Адрес OTLP gRPC Collector | `localhost:4317` |
+| `OTEL_EXPORTER_OTLP_INSECURE` | Отключить TLS для локального OTLP | `true` |
+| `OTEL_COLLECTOR_GRPC_PORT` | Host-порт локального Collector | `4317` |
+| `JAEGER_UI_PORT` | Host-порт Jaeger UI | `16686` |
 
 В Docker Compose для приложения используются значения:
 
@@ -224,6 +239,10 @@ APP_PORT: "8080"
 JWT_SECRET: "secret"
 POSTGRES_DSN: "postgres://postgres:postgres@postgres:5432/task_manager?sslmode=disable"
 REDIS_ADDR: "redis:6379"
+OTEL_ENABLED: "true"
+OTEL_SERVICE_NAME: "task-manager-api"
+OTEL_EXPORTER_OTLP_ENDPOINT: "otel-collector:4317"
+OTEL_EXPORTER_OTLP_INSECURE: "true"
 ```
 
 ## База данных
@@ -880,6 +899,35 @@ curl -s http://localhost:18080/metrics
 | `http_request_duration_seconds` | Histogram времени ответа              |
 | `http_errors_total`             | Количество HTTP-ошибок 4xx/5xx        |
 | Go/process metrics              | Стандартные метрики Prometheus client |
+
+## OpenTelemetry tracing
+
+Приложение отправляет traces по OTLP gRPC через следующую цепочку:
+
+```text
+task-manager-api -> OpenTelemetry Collector -> Jaeger
+```
+
+Prometheus-метрики продолжают работать независимо через `GET /metrics`.
+
+При запуске через Docker Compose tracing включён автоматически. Jaeger UI доступен по адресу:
+
+```text
+http://localhost:16686
+```
+
+Для локального запуска приложения без Collector tracing по умолчанию выключен. Его можно включить так:
+
+```bash
+OTEL_ENABLED=true \
+OTEL_EXPORTER_OTLP_ENDPOINT=localhost:4317 \
+OTEL_EXPORTER_OTLP_INSECURE=true \
+go run ./cmd/api
+```
+
+HTTP spans используют шаблоны маршрутов, например `GET /api/v1/tasks/{id}`. Внутри них создаются spans значимых операций `TaskService` и `TeamService`.
+
+Для ручной проверки после `docker compose up --build` нужно выполнить login и несколько защищённых запросов, затем выбрать сервис `task-manager-api` в Jaeger UI.
 
 ## Redis-кеширование
 

@@ -9,6 +9,8 @@ import (
 	"log/slog"
 	"strings"
 
+	"go.opentelemetry.io/otel/attribute"
+
 	"task-manager/internal/models"
 )
 
@@ -108,7 +110,14 @@ func NewTaskService(tasks TaskRepository, policy *TaskPolicy, taskCache TaskCach
 	}
 }
 
-func (s *TaskService) Create(ctx context.Context, userID int64, task models.Task) (int64, error) {
+func (s *TaskService) Create(ctx context.Context, userID int64, task models.Task) (taskID int64, err error) {
+	ctx, span := startSpan(ctx, "TaskService.Create",
+		attribute.Int64("user.id", userID),
+		attribute.Int64("team.id", task.TeamID),
+		attribute.String("task.status", task.Status),
+	)
+	defer func() { finishSpan(span, err) }()
+
 	isMember, err := s.policy.IsTeamMember(ctx, task.TeamID, userID)
 	if err != nil {
 		return 0, fmt.Errorf("check team membership: %w", err)
@@ -126,10 +135,11 @@ func (s *TaskService) Create(ctx context.Context, userID int64, task models.Task
 	}
 
 	task.CreatedBy = userID
-	taskID, err := s.tasks.Create(ctx, task)
+	taskID, err = s.tasks.Create(ctx, task)
 	if err != nil {
 		return 0, fmt.Errorf("create task: %w", err)
 	}
+	span.SetAttributes(attribute.Int64("task.id", taskID))
 
 	s.invalidateTeamCache(ctx, task.TeamID)
 	return taskID, nil
@@ -146,8 +156,14 @@ func (s *TaskService) getByID(ctx context.Context, taskID int64) (*models.Task, 
 	return task, nil
 }
 
-func (s *TaskService) GetByID(ctx context.Context, userID, taskID int64) (*models.Task, error) {
-	task, err := s.getByID(ctx, taskID)
+func (s *TaskService) GetByID(ctx context.Context, userID, taskID int64) (task *models.Task, err error) {
+	ctx, span := startSpan(ctx, "TaskService.GetByID",
+		attribute.Int64("user.id", userID),
+		attribute.Int64("task.id", taskID),
+	)
+	defer func() { finishSpan(span, err) }()
+
+	task, err = s.getByID(ctx, taskID)
 	if err != nil {
 		return nil, err
 	}
@@ -162,7 +178,14 @@ func (s *TaskService) GetByID(ctx context.Context, userID, taskID int64) (*model
 	return task, nil
 }
 
-func (s *TaskService) List(ctx context.Context, userID, teamID int64, status string, assigneeID *int64, limit, offset int) ([]models.Task, error) {
+func (s *TaskService) List(ctx context.Context, userID, teamID int64, status string, assigneeID *int64, limit, offset int) (tasks []models.Task, err error) {
+	ctx, span := startSpan(ctx, "TaskService.List",
+		attribute.Int64("user.id", userID),
+		attribute.Int64("team.id", teamID),
+		attribute.String("task.status", status),
+	)
+	defer func() { finishSpan(span, err) }()
+
 	isMember, err := s.policy.IsTeamMember(ctx, teamID, userID)
 	if err != nil {
 		return nil, fmt.Errorf("check team membership: %w", err)
@@ -193,7 +216,7 @@ func (s *TaskService) List(ctx context.Context, userID, teamID int64, status str
 		}
 	}
 
-	tasks, err := s.tasks.List(ctx, teamID, status, assigneeID, limit, offset)
+	tasks, err = s.tasks.List(ctx, teamID, status, assigneeID, limit, offset)
 	if err != nil {
 		return nil, fmt.Errorf("list tasks: %w", err)
 	}
@@ -210,7 +233,13 @@ func (s *TaskService) List(ctx context.Context, userID, teamID int64, status str
 	return tasks, nil
 }
 
-func (s *TaskService) Update(ctx context.Context, userID, taskID int64, update TaskUpdate) error {
+func (s *TaskService) Update(ctx context.Context, userID, taskID int64, update TaskUpdate) (err error) {
+	ctx, span := startSpan(ctx, "TaskService.Update",
+		attribute.Int64("user.id", userID),
+		attribute.Int64("task.id", taskID),
+	)
+	defer func() { finishSpan(span, err) }()
+
 	task, err := s.getByID(ctx, taskID)
 	if err != nil {
 		return err
@@ -253,7 +282,13 @@ func (s *TaskService) Update(ctx context.Context, userID, taskID int64, update T
 	return nil
 }
 
-func (s *TaskService) History(ctx context.Context, userID, taskID int64) ([]models.TaskHistory, error) {
+func (s *TaskService) History(ctx context.Context, userID, taskID int64) (history []models.TaskHistory, err error) {
+	ctx, span := startSpan(ctx, "TaskService.History",
+		attribute.Int64("user.id", userID),
+		attribute.Int64("task.id", taskID),
+	)
+	defer func() { finishSpan(span, err) }()
+
 	task, err := s.getByID(ctx, taskID)
 	if err != nil {
 		return nil, err
@@ -267,7 +302,7 @@ func (s *TaskService) History(ctx context.Context, userID, taskID int64) ([]mode
 		return nil, ErrForbidden
 	}
 
-	history, err := s.tasks.History(ctx, taskID)
+	history, err = s.tasks.History(ctx, taskID)
 	if err != nil {
 		return nil, fmt.Errorf("list task history: %w", err)
 	}

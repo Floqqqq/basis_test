@@ -20,6 +20,7 @@ import (
 	redisclient "task-manager/internal/redis"
 	"task-manager/internal/repository"
 	"task-manager/internal/service"
+	"task-manager/internal/telemetry"
 )
 
 func main() {
@@ -36,6 +37,16 @@ func main() {
 		log.Fatal(err)
 	}
 	defer redisClient.Close()
+
+	telemetryShutdown, err := telemetry.Init(context.Background(), telemetry.Config{
+		Enabled:          cfg.OTelEnabled,
+		ServiceName:      cfg.OTelServiceName,
+		ExporterEndpoint: cfg.OTelExporterEndpoint,
+		ExporterInsecure: cfg.OTelExporterInsecure,
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	middleware.RegisterMetrics()
 
@@ -63,6 +74,7 @@ func main() {
 	r := chi.NewRouter()
 
 	r.Use(middleware.Metrics)
+	r.Use(telemetry.RouteSpan)
 
 	r.Get("/metrics", promhttp.Handler().ServeHTTP)
 
@@ -97,33 +109,43 @@ func main() {
 
 	server := &http.Server{
 		Addr:    ":" + cfg.AppPort,
-		Handler: r,
+		Handler: telemetry.HTTPHandler(r, cfg.OTelServiceName),
 	}
 
+	serverErrors := make(chan error, 1)
 	go func() {
 		log.Println("server started on port", cfg.AppPort)
-
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatal(err)
-		}
+		serverErrors <- server.ListenAndServe()
 	}()
 
 	stop := make(chan os.Signal, 1)
 
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 
-	<-stop
+	select {
+	case <-stop:
+	case err := <-serverErrors:
+		if err != nil && err != http.ErrServerClosed {
+			log.Printf("HTTP server failed: %v", err)
+		}
+	}
 
 	log.Println("shutting down server...")
 
-	ctx, cancel := context.WithTimeout(
+	serverCtx, cancelServer := context.WithTimeout(
 		context.Background(),
 		10*time.Second)
-	defer cancel()
 
-	if err := server.Shutdown(ctx); err != nil {
-		log.Fatal(err)
+	if err := server.Shutdown(serverCtx); err != nil {
+		log.Printf("HTTP server shutdown failed: %v", err)
 	}
+	cancelServer()
+
+	telemetryCtx, cancelTelemetry := context.WithTimeout(context.Background(), 10*time.Second)
+	if err := telemetryShutdown(telemetryCtx); err != nil {
+		log.Printf("telemetry shutdown failed: %v", err)
+	}
+	cancelTelemetry()
 
 	log.Println("server stopped")
 }
