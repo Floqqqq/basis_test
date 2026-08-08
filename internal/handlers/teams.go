@@ -2,25 +2,19 @@ package handlers
 
 import (
 	"encoding/json"
-	"errors"
 	"net/http"
 	"strings"
 
 	"task-manager/internal/middleware"
-	"task-manager/internal/repository"
 	"task-manager/internal/service"
 )
 
 type TeamHandler struct {
-	teams        *repository.TeamRepository
-	inviteSender service.InviteSender
+	teams *service.TeamService
 }
 
-func NewTeamHandler(teams *repository.TeamRepository, inviteSender service.InviteSender) *TeamHandler {
-	return &TeamHandler{
-		teams:        teams,
-		inviteSender: inviteSender,
-	}
+func NewTeamHandler(teams *service.TeamService) *TeamHandler {
+	return &TeamHandler{teams: teams}
 }
 
 type createTeamRequest struct {
@@ -46,9 +40,9 @@ func (h *TeamHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	teamID, err := h.teams.Create(r.Context(), req.Name, userID)
+	teamID, err := h.teams.Create(r.Context(), userID, req.Name)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "cannot create team")
+		writeServiceError(w, err, "cannot create team")
 		return
 	}
 
@@ -60,9 +54,9 @@ func (h *TeamHandler) Create(w http.ResponseWriter, r *http.Request) {
 func (h *TeamHandler) List(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.GetUserID(r)
 
-	teams, err := h.teams.ListByUser(r.Context(), userID)
+	teams, err := h.teams.List(r.Context(), userID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "cannot get teams")
+		writeServiceError(w, err, "cannot get teams")
 		return
 	}
 
@@ -80,12 +74,6 @@ func (h *TeamHandler) Invite(w http.ResponseWriter, r *http.Request) {
 	teamID, err := parseIDParam(r, "id")
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid team id")
-		return
-	}
-
-	role, err := h.teams.GetUserRole(r.Context(), teamID, currentUserID)
-	if err != nil || (role != "owner" && role != "admin") {
-		writeError(w, http.StatusForbidden, "forbidden")
 		return
 	}
 
@@ -108,28 +96,14 @@ func (h *TeamHandler) Invite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.teams.Invite(r.Context(), teamID, req.UserID, req.Role); err != nil {
-		if errors.Is(err, repository.ErrUserNotFound) {
-			writeError(w, http.StatusNotFound, "user not found")
-			return
-		}
-
-		if errors.Is(err, repository.ErrTeamMemberExists) {
-			writeError(w, http.StatusConflict, "user is already team member")
-			return
-		}
-
-		writeError(w, http.StatusInternalServerError, "cannot invite user")
+	if err := h.teams.Invite(r.Context(), currentUserID, teamID, req.UserID, req.Role); err != nil {
+		writeServiceError(w, err, "cannot invite user")
 		return
-	}
-
-	if err := h.inviteSender.SendInvite(r.Context(), teamID, req.UserID, req.Role); err != nil {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{
 		"status": "invited",
 	})
-
 }
 
 func validInviteRole(role string) bool {

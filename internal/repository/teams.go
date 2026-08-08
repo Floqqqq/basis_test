@@ -3,9 +3,9 @@ package repository
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 
+	"task-manager/internal/domain"
 	"task-manager/internal/models"
 )
 
@@ -14,8 +14,8 @@ type TeamRepository struct {
 }
 
 var (
-	ErrUserNotFound     = errors.New("user not found")
-	ErrTeamMemberExists = errors.New("user is already team member")
+	ErrUserNotFound     = domain.ErrUserNotFound
+	ErrTeamMemberExists = domain.ErrTeamMemberExists
 )
 
 func NewTeamRepository(db *sql.DB) *TeamRepository {

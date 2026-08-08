@@ -137,10 +137,13 @@ func newTaskHandlerForTest(t *testing.T) (*TaskHandler, sqlmock.Sqlmock, redismo
 	})
 
 	teams := repository.NewTeamRepository(db)
-	return NewTaskHandler(
+	taskService := service.NewTaskService(
 		repository.NewTaskRepository(db),
 		service.NewTaskPolicy(teams),
 		cache.NewTaskCache(redisClient, time.Minute),
+	)
+	return NewTaskHandler(
+		taskService,
 	), mock, redisMock, db
 }
 

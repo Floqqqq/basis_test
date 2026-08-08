@@ -52,10 +52,12 @@ func main() {
 	reportRepo := repository.NewReportRepository(postgresDB)
 	taskPolicy := service.NewTaskPolicy(teamRepo)
 	taskCache := cache.NewTaskCache(redisClient, 5*time.Minute)
+	teamService := service.NewTeamService(teamRepo, inviteSender)
+	taskService := service.NewTaskService(taskRepo, taskPolicy, taskCache)
 
 	authHandler := handlers.NewAuthHandler(userRepo, authService)
-	teamHandler := handlers.NewTeamHandler(teamRepo, inviteSender)
-	taskHandler := handlers.NewTaskHandler(taskRepo, taskPolicy, taskCache)
+	teamHandler := handlers.NewTeamHandler(teamService)
+	taskHandler := handlers.NewTaskHandler(taskService)
 	reportHandler := handlers.NewReportHandler(reportRepo)
 
 	r := chi.NewRouter()

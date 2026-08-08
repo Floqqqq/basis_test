@@ -2,30 +2,23 @@ package handlers
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
 
-	"task-manager/internal/cache"
 	"task-manager/internal/middleware"
 	"task-manager/internal/models"
-	"task-manager/internal/repository"
 	"task-manager/internal/service"
 )
 
 type TaskHandler struct {
-	tasks     *repository.TaskRepository
-	policy    *service.TaskPolicy
-	taskCache *cache.TaskCache
+	tasks *service.TaskService
 }
 
-func NewTaskHandler(tasks *repository.TaskRepository, policy *service.TaskPolicy, taskCache *cache.TaskCache) *TaskHandler {
-	return &TaskHandler{
-		tasks:     tasks,
-		policy:    policy,
-		taskCache: taskCache,
-	}
+func NewTaskHandler(tasks *service.TaskService) *TaskHandler {
+	return &TaskHandler{tasks: tasks}
 }
 
 type createTaskRequest struct {
@@ -58,29 +51,8 @@ func (h *TaskHandler) Create(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "team_id is required")
 		return
 	}
-
-	isMember, err := h.policy.IsTeamMember(r.Context(), req.TeamID, userID)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "cannot check team membership")
-		return
-	}
-	if !isMember {
-		writeError(w, http.StatusForbidden, "user is not team member")
-		return
-	}
-
 	if req.AssigneeID != nil && *req.AssigneeID <= 0 {
 		writeError(w, http.StatusBadRequest, "invalid assignee_id")
-		return
-	}
-
-	assigneeValid, err := h.policy.IsAssigneeValidForTeam(r.Context(), req.TeamID, req.AssigneeID)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "cannot check assignee")
-		return
-	}
-	if !assigneeValid {
-		writeError(w, http.StatusBadRequest, "assignee is not team member")
 		return
 	}
 
@@ -92,20 +64,16 @@ func (h *TaskHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	taskID, err := h.tasks.Create(r.Context(), models.Task{
+	taskID, err := h.tasks.Create(r.Context(), userID, models.Task{
 		Title:       req.Title,
 		Description: req.Description,
 		Status:      req.Status,
 		AssigneeID:  req.AssigneeID,
 		TeamID:      req.TeamID,
-		CreatedBy:   userID,
 	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "cannot create task")
+		writeServiceError(w, err, "cannot create task")
 		return
-	}
-
-	if err := h.taskCache.InvalidateTeam(r.Context(), req.TeamID); err != nil {
 	}
 
 	writeJSON(w, http.StatusCreated, map[string]any{
@@ -150,54 +118,13 @@ func (h *TaskHandler) List(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	isMember, err := h.policy.IsTeamMember(r.Context(), teamID, userID)
+	tasks, err := h.tasks.List(r.Context(), userID, teamID, status, assigneeID, limit, offset)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "cannot check team membership")
-		return
-	}
-	if !isMember {
-		writeError(w, http.StatusForbidden, "forbidden")
+		writeServiceError(w, err, "cannot get tasks")
 		return
 	}
 
-	assigneeValid, err := h.policy.IsAssigneeValidForTeam(r.Context(), teamID, assigneeID)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "cannot check assignee")
-		return
-	}
-	if !assigneeValid {
-		writeError(w, http.StatusBadRequest, "assignee is not team member")
-		return
-	}
-
-	cached, ok, err := h.taskCache.GetList(r.Context(), teamID, status, assigneeID, limit, offset)
-	if err == nil && ok {
-		w.Header().Set("Content-Type", "application/json")
-		if _, err := w.Write(cached); err != nil {
-			return
-		}
-		return
-	}
-
-	tasks, err := h.tasks.List(r.Context(), teamID, status, assigneeID, limit, offset)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "cannot get tasks")
-		return
-	}
-
-	body, err := json.Marshal(tasks)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "cannot encode tasks")
-		return
-	}
-
-	if err := h.taskCache.SetList(r.Context(), teamID, status, assigneeID, limit, offset, body); err != nil {
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	if _, err := w.Write(body); err != nil {
-		return
-	}
+	writeJSON(w, http.StatusOK, tasks)
 }
 
 type updateTaskRequest struct {
@@ -216,22 +143,6 @@ func (h *TaskHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	task, err := h.tasks.GetByID(r.Context(), taskID)
-	if err != nil {
-		writeError(w, http.StatusNotFound, "task not found")
-		return
-	}
-
-	canUpdate, err := h.policy.CanUpdateTask(r.Context(), task, userID)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "cannot check permissions")
-		return
-	}
-	if !canUpdate {
-		writeError(w, http.StatusForbidden, "forbidden")
-		return
-	}
-
 	var req updateTaskRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body")
@@ -243,22 +154,23 @@ func (h *TaskHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	updated := *task
+	update := service.TaskUpdate{}
 
 	if req.Title != nil {
-		updated.Title = strings.TrimSpace(*req.Title)
-		if updated.Title == "" {
+		title := strings.TrimSpace(*req.Title)
+		if title == "" {
 			writeError(w, http.StatusBadRequest, "title cannot be empty")
 			return
 		}
-		if len(updated.Title) > 255 {
+		if len(title) > 255 {
 			writeError(w, http.StatusBadRequest, "title is too long")
 			return
 		}
+		update.Title = &title
 	}
 
 	if req.Description != nil {
-		updated.Description = *req.Description
+		update.Description = req.Description
 	}
 
 	if req.Status != nil {
@@ -266,7 +178,7 @@ func (h *TaskHandler) Update(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "invalid status")
 			return
 		}
-		updated.Status = *req.Status
+		update.Status = req.Status
 	}
 
 	if req.AssigneeID != nil {
@@ -274,26 +186,12 @@ func (h *TaskHandler) Update(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "invalid assignee_id")
 			return
 		}
-
-		assigneeValid, err := h.policy.IsAssigneeValidForTeam(r.Context(), task.TeamID, req.AssigneeID)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "cannot check assignee")
-			return
-		}
-		if !assigneeValid {
-			writeError(w, http.StatusBadRequest, "assignee is not team member")
-			return
-		}
-
-		updated.AssigneeID = req.AssigneeID
+		update.AssigneeID = req.AssigneeID
 	}
 
-	if err := h.tasks.Update(r.Context(), userID, updated); err != nil {
-		writeError(w, http.StatusInternalServerError, "cannot update task")
+	if err := h.tasks.Update(r.Context(), userID, taskID, update); err != nil {
+		writeServiceError(w, err, "cannot update task")
 		return
-	}
-
-	if err := h.taskCache.InvalidateTeam(r.Context(), task.TeamID); err != nil {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{
@@ -310,25 +208,9 @@ func (h *TaskHandler) History(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	task, err := h.tasks.GetByID(r.Context(), taskID)
+	history, err := h.tasks.History(r.Context(), userID, taskID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "task not found")
-		return
-	}
-
-	canView, err := h.policy.CanViewTaskHistory(r.Context(), task, userID)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "cannot check permissions")
-		return
-	}
-	if !canView {
-		writeError(w, http.StatusForbidden, "forbidden")
-		return
-	}
-
-	history, err := h.tasks.History(r.Context(), taskID)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "cannot get history")
+		writeServiceError(w, err, "cannot get history")
 		return
 	}
 
@@ -353,4 +235,19 @@ func parseNonNegativeInt(value string, fallback int) (int, error) {
 		return 0, fmt.Errorf("invalid non-negative int")
 	}
 	return i, nil
+}
+
+func writeServiceError(w http.ResponseWriter, err error, fallback string) {
+	switch {
+	case errors.Is(err, service.ErrInvalidInput):
+		writeError(w, http.StatusBadRequest, err.Error())
+	case errors.Is(err, service.ErrForbidden):
+		writeError(w, http.StatusForbidden, "forbidden")
+	case errors.Is(err, service.ErrNotFound):
+		writeError(w, http.StatusNotFound, "not found")
+	case errors.Is(err, service.ErrConflict):
+		writeError(w, http.StatusConflict, err.Error())
+	default:
+		writeError(w, http.StatusInternalServerError, fallback)
+	}
 }

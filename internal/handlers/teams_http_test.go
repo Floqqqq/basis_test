@@ -86,7 +86,8 @@ func newTeamHandlerForTest(t *testing.T) (*TeamHandler, sqlmock.Sqlmock, *sql.DB
 		}
 	})
 
-	return NewTeamHandler(repository.NewTeamRepository(db), service.NewMockInviteSender()), mock, db
+	teamService := service.NewTeamService(repository.NewTeamRepository(db), service.NewMockInviteSender())
+	return NewTeamHandler(teamService), mock, db
 }
 
 func teamRequest(method, target, body string) *http.Request {
