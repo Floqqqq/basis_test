@@ -4,27 +4,28 @@ services:
     ports:
       - "${APP_HOST_PORT:-18080}:8080"
     depends_on:
-      mysql:
+      postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
     environment:
       APP_PORT: "8080"
       JWT_SECRET: "secret"
-      MYSQL_DSN: "root:root@tcp(mysql:3306)/task_manager?parseTime=true"
+      POSTGRES_DSN: "postgres://postgres:postgres@postgres:5432/task_manager?sslmode=disable"
       REDIS_ADDR: "redis:6379"
 
-  mysql:
-    image: mysql:8.0
+  postgres:
+    image: postgres:16-alpine
     environment:
-      MYSQL_ROOT_PASSWORD: root
-      MYSQL_DATABASE: task_manager
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: task_manager
     ports:
-      - "${MYSQL_HOST_PORT:-3307}:3306"
+      - "${POSTGRES_HOST_PORT:-5433}:5432"
     volumes:
       - ./migrations:/docker-entrypoint-initdb.d:ro
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-proot"]
+      test: ["CMD-SHELL", "pg_isready -U postgres -d task_manager"]
       interval: 5s
       timeout: 5s
       retries: 20

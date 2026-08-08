@@ -41,7 +41,7 @@ func TestAuthHandlerRegisterRejectsMissingPassword(t *testing.T) {
 func TestAuthHandlerLoginInvalidCredentials(t *testing.T) {
 	handler, mock, _ := newAuthHandlerForTest(t)
 
-	mock.ExpectQuery(regexp.QuoteMeta(`SELECT id, email, password_hash, created_at FROM users WHERE email = ?`)).
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT id, email, password_hash, created_at FROM users WHERE email = $1`)).
 		WithArgs("user@example.com").
 		WillReturnError(sql.ErrNoRows)
 

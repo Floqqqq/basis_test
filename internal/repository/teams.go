@@ -36,22 +36,17 @@ func (r *TeamRepository) Create(ctx context.Context, name string, userID int64) 
 		}
 	}()
 
-	res, err := tx.ExecContext(ctx,
-		`INSERT INTO teams(name, created_by) VALUES (?, ?)`,
+	err = tx.QueryRowContext(ctx,
+		`INSERT INTO teams(name, created_by) VALUES ($1, $2) RETURNING id`,
 		name,
 		userID,
-	)
+	).Scan(&teamID)
 	if err != nil {
 		return 0, fmt.Errorf("insert team: %w", err)
 	}
 
-	teamID, err = res.LastInsertId()
-	if err != nil {
-		return 0, fmt.Errorf("get created team id: %w", err)
-	}
-
 	_, err = tx.ExecContext(ctx,
-		`INSERT INTO team_members(user_id, team_id, role) VALUES (?, ?, 'owner')`,
+		`INSERT INTO team_members(user_id, team_id, role) VALUES ($1, $2, 'owner')`,
 		userID,
 		teamID,
 	)
@@ -72,7 +67,7 @@ func (r *TeamRepository) ListByUser(ctx context.Context, userID int64) ([]models
 		SELECT t.id, t.name, t.created_by, t.created_at
 		FROM teams t
 		JOIN team_members tm ON tm.team_id = t.id
-		WHERE tm.user_id = ?
+		WHERE tm.user_id = $1
 		ORDER BY t.created_at DESC
 	`, userID)
 	if err != nil {
@@ -102,7 +97,7 @@ func (r *TeamRepository) GetUserRole(ctx context.Context, teamID, userID int64) 
 	var role string
 
 	err := r.db.QueryRowContext(ctx,
-		`SELECT role FROM team_members WHERE team_id = ? AND user_id = ?`,
+		`SELECT role FROM team_members WHERE team_id = $1 AND user_id = $2`,
 		teamID,
 		userID,
 	).Scan(&role)
@@ -119,7 +114,7 @@ func (r *TeamRepository) IsTeamMember(ctx context.Context, teamID, userID int64)
 
 	err := r.db.QueryRowContext(ctx, `
 		SELECT EXISTS(
-			SELECT 1 FROM team_members WHERE team_id = ? AND user_id = ?
+			SELECT 1 FROM team_members WHERE team_id = $1 AND user_id = $2
 		)
 	`, teamID, userID).Scan(&exists)
 	if err != nil {
@@ -133,7 +128,7 @@ func (r *TeamRepository) Invite(ctx context.Context, teamID, userID int64, role 
 	var userExists bool
 	if err := r.db.QueryRowContext(ctx, `
 		SELECT EXISTS(
-			SELECT 1 FROM users WHERE id = ?
+			SELECT 1 FROM users WHERE id = $1
 		)
 	`, userID).Scan(&userExists); err != nil {
 		return fmt.Errorf("check invited user exists: %w", err)
@@ -146,7 +141,7 @@ func (r *TeamRepository) Invite(ctx context.Context, teamID, userID int64, role 
 	var memberExists bool
 	if err := r.db.QueryRowContext(ctx, `
 		SELECT EXISTS(
-			SELECT 1 FROM team_members WHERE team_id = ? AND user_id = ?
+			SELECT 1 FROM team_members WHERE team_id = $1 AND user_id = $2
 		)
 	`, teamID, userID).Scan(&memberExists); err != nil {
 		return fmt.Errorf("check team member exists: %w", err)
@@ -157,7 +152,7 @@ func (r *TeamRepository) Invite(ctx context.Context, teamID, userID int64, role 
 	}
 
 	_, err := r.db.ExecContext(ctx,
-		`INSERT INTO team_members(user_id, team_id, role) VALUES (?, ?, ?)`,
+		`INSERT INTO team_members(user_id, team_id, role) VALUES ($1, $2, $3)`,
 		userID,
 		teamID,
 		role,

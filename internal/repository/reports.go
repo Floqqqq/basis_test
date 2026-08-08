@@ -43,13 +43,13 @@ func (r *ReportRepository) TeamStats(ctx context.Context, userID int64) ([]TeamS
 			COUNT(DISTINCT tm.user_id) AS members_count,
 			COUNT(DISTINCT CASE
 				WHEN tasks.status = 'done'
-				AND tasks.completed_at >= NOW() - INTERVAL 7 DAY
+				AND tasks.completed_at >= CURRENT_TIMESTAMP - INTERVAL '7 days'
 				THEN tasks.id
 			END) AS done_tasks_last_7_days
 		FROM teams t
 		JOIN team_members current_user_tm
 			ON current_user_tm.team_id = t.id
-			AND current_user_tm.user_id = ?
+			AND current_user_tm.user_id = $1
 		LEFT JOIN team_members tm ON tm.team_id = t.id
 		LEFT JOIN tasks ON tasks.team_id = t.id
 		GROUP BY t.id, t.name
@@ -91,12 +91,12 @@ func (r *ReportRepository) TopUsers(ctx context.Context, userID int64) ([]TopUse
 					ORDER BY COUNT(*) DESC
 				) AS rn
 			FROM tasks t
-			WHERE t.created_at >= DATE_FORMAT(CURRENT_DATE, '%Y-%m-01')
+			WHERE t.created_at >= date_trunc('month', CURRENT_DATE)
 			GROUP BY t.team_id, t.created_by
 		) ranked
 		JOIN team_members current_user_tm
 			ON current_user_tm.team_id = ranked.team_id
-			AND current_user_tm.user_id = ?
+			AND current_user_tm.user_id = $1
 		WHERE ranked.rn <= 3
 	`, userID)
 	if err != nil {
@@ -129,7 +129,7 @@ func (r *ReportRepository) InvalidAssignees(ctx context.Context, userID int64) (
 		FROM tasks
 		JOIN team_members current_user_tm
 			ON current_user_tm.team_id = tasks.team_id
-			AND current_user_tm.user_id = ?
+			AND current_user_tm.user_id = $1
 		LEFT JOIN team_members tm
 			ON tm.team_id = tasks.team_id
 			AND tm.user_id = tasks.assignee_id

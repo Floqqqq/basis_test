@@ -6,13 +6,13 @@ import (
 	"fmt"
 	"time"
 
-	_ "github.com/go-sql-driver/mysql"
+	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
-func NewMySQL(dsn string) (*sql.DB, error) {
-	conn, err := sql.Open("mysql", dsn)
+func NewPostgres(dsn string) (*sql.DB, error) {
+	conn, err := sql.Open("pgx", dsn)
 	if err != nil {
-		return nil, fmt.Errorf("open mysql: %w", err)
+		return nil, fmt.Errorf("open postgres: %w", err)
 	}
 
 	conn.SetMaxOpenConns(25)
@@ -21,9 +21,9 @@ func NewMySQL(dsn string) (*sql.DB, error) {
 
 	if err := pingWithRetry(conn, 30, time.Second); err != nil {
 		if closeErr := conn.Close(); closeErr != nil {
-			return nil, fmt.Errorf("ping mysql: %w; close mysql: %v", err, closeErr)
+			return nil, fmt.Errorf("ping postgres: %w; close postgres: %v", err, closeErr)
 		}
-		return nil, fmt.Errorf("ping mysql: %w", err)
+		return nil, fmt.Errorf("ping postgres: %w", err)
 	}
 
 	return conn, nil

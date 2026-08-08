@@ -19,7 +19,7 @@ func TestUserRepositoryCreateWrapsInsertError(t *testing.T) {
 	repo := NewUserRepository(db)
 	insertErr := errors.New("duplicate")
 
-	mock.ExpectExec(regexp.QuoteMeta(`INSERT INTO users(email, password_hash) VALUES (?, ?)`)).
+	mock.ExpectQuery(regexp.QuoteMeta(`INSERT INTO users(email, password_hash) VALUES ($1, $2) RETURNING id`)).
 		WithArgs("user@example.com", "hash").
 		WillReturnError(insertErr)
 
@@ -44,7 +44,7 @@ func TestUserRepositoryExists(t *testing.T) {
 	rows := sqlmock.NewRows([]string{"exists"}).AddRow(false)
 	mock.ExpectQuery(regexp.QuoteMeta(`
 		SELECT EXISTS(
-			SELECT 1 FROM users WHERE id = ?
+			SELECT 1 FROM users WHERE id = $1
 		)
 	`)).
 		WithArgs(int64(12)).

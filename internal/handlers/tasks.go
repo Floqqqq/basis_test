@@ -106,7 +106,6 @@ func (h *TaskHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.taskCache.InvalidateTeam(r.Context(), req.TeamID); err != nil {
-		// Cache invalidation is best-effort; the database write is already complete.
 	}
 
 	writeJSON(w, http.StatusCreated, map[string]any{
@@ -295,7 +294,6 @@ func (h *TaskHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.taskCache.InvalidateTeam(r.Context(), task.TeamID); err != nil {
-		// Cache invalidation is best-effort; the database write is already complete.
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{

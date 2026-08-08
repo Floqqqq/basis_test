@@ -56,7 +56,7 @@ func TestTeamHandlerInviteRejectsInvalidID(t *testing.T) {
 func TestTeamHandlerInviteForbiddenWhenRoleMissing(t *testing.T) {
 	handler, mock, _ := newTeamHandlerForTest(t)
 
-	mock.ExpectQuery(regexp.QuoteMeta(`SELECT role FROM team_members WHERE team_id = ? AND user_id = ?`)).
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT role FROM team_members WHERE team_id = $1 AND user_id = $2`)).
 		WithArgs(int64(5), int64(42)).
 		WillReturnError(sql.ErrNoRows)
 

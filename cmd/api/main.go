@@ -25,11 +25,11 @@ import (
 func main() {
 	cfg := config.Load()
 
-	mysqlDB, err := db.NewMySQL(cfg.MySQLDSN)
+	postgresDB, err := db.NewPostgres(cfg.PostgresDSN)
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer mysqlDB.Close()
+	defer postgresDB.Close()
 
 	redisClient, err := redisclient.NewRedis(cfg.RedisAddr)
 	if err != nil {
@@ -46,10 +46,10 @@ func main() {
 		30*time.Second,
 	)
 
-	userRepo := repository.NewUserRepository(mysqlDB)
-	teamRepo := repository.NewTeamRepository(mysqlDB)
-	taskRepo := repository.NewTaskRepository(mysqlDB)
-	reportRepo := repository.NewReportRepository(mysqlDB)
+	userRepo := repository.NewUserRepository(postgresDB)
+	teamRepo := repository.NewTeamRepository(postgresDB)
+	taskRepo := repository.NewTaskRepository(postgresDB)
+	reportRepo := repository.NewReportRepository(postgresDB)
 	taskPolicy := service.NewTaskPolicy(teamRepo)
 	taskCache := cache.NewTaskCache(redisClient, 5*time.Minute)
 
@@ -108,7 +108,9 @@ func main() {
 
 	log.Println("shutting down server...")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(
+		context.Background(),
+		10*time.Second)
 	defer cancel()
 
 	if err := server.Shutdown(ctx); err != nil {

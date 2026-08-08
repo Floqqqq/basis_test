@@ -17,18 +17,14 @@ func NewUserRepository(db *sql.DB) *UserRepository {
 }
 
 func (r *UserRepository) Create(ctx context.Context, email, passwordHash string) (int64, error) {
-	res, err := r.db.ExecContext(ctx,
-		`INSERT INTO users(email, password_hash) VALUES (?, ?)`,
+	var userID int64
+	err := r.db.QueryRowContext(ctx,
+		`INSERT INTO users(email, password_hash) VALUES ($1, $2) RETURNING id`,
 		email,
 		passwordHash,
-	)
+	).Scan(&userID)
 	if err != nil {
 		return 0, fmt.Errorf("create user: %w", err)
-	}
-
-	userID, err := res.LastInsertId()
-	if err != nil {
-		return 0, fmt.Errorf("get created user id: %w", err)
 	}
 
 	return userID, nil
@@ -38,7 +34,7 @@ func (r *UserRepository) GetByEmail(ctx context.Context, email string) (*models.
 	var u models.User
 
 	err := r.db.QueryRowContext(ctx,
-		`SELECT id, email, password_hash, created_at FROM users WHERE email = ?`,
+		`SELECT id, email, password_hash, created_at FROM users WHERE email = $1`,
 		email,
 	).Scan(&u.ID, &u.Email, &u.PasswordHash, &u.CreatedAt)
 
@@ -54,7 +50,7 @@ func (r *UserRepository) Exists(ctx context.Context, userID int64) (bool, error)
 
 	err := r.db.QueryRowContext(ctx, `
 		SELECT EXISTS(
-			SELECT 1 FROM users WHERE id = ?
+			SELECT 1 FROM users WHERE id = $1
 		)
 	`, userID).Scan(&exists)
 	if err != nil {

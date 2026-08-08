@@ -18,9 +18,11 @@ func NewTaskRepository(db *sql.DB) *TaskRepository {
 }
 
 func (r *TaskRepository) Create(ctx context.Context, task models.Task) (int64, error) {
-	res, err := r.db.ExecContext(ctx, `
+	var taskID int64
+	err := r.db.QueryRowContext(ctx, `
 			INSERT INTO tasks(title, description, status, assignee_id, completed_at, team_id, created_by)
-			VALUES (?, ?, ?, ?, CASE WHEN ? = 'done' THEN CURRENT_TIMESTAMP ELSE NULL END, ?, ?)
+			VALUES ($1, $2, $3, $4, CASE WHEN $5 = 'done' THEN CURRENT_TIMESTAMP ELSE NULL END, $6, $7)
+			RETURNING id
 		`,
 		task.Title,
 		task.Description,
@@ -29,14 +31,9 @@ func (r *TaskRepository) Create(ctx context.Context, task models.Task) (int64, e
 		task.Status,
 		task.TeamID,
 		task.CreatedBy,
-	)
+	).Scan(&taskID)
 	if err != nil {
 		return 0, fmt.Errorf("create task: %w", err)
-	}
-
-	taskID, err := res.LastInsertId()
-	if err != nil {
-		return 0, fmt.Errorf("get created task id: %w", err)
 	}
 
 	return taskID, nil
@@ -46,22 +43,25 @@ func (r *TaskRepository) List(ctx context.Context, teamID int64, status string, 
 	query := `
 			SELECT id, title, description, status, assignee_id, completed_at, team_id, created_by, created_at, updated_at
 			FROM tasks
-			WHERE team_id = ?
+			WHERE team_id = $1
 	`
 
 	args := []any{teamID}
+	nextPlaceholder := 2
 
 	if status != "" {
-		query += ` AND status = ?`
+		query += fmt.Sprintf(` AND status = $%d`, nextPlaceholder)
 		args = append(args, status)
+		nextPlaceholder++
 	}
 
 	if assigneeID != nil {
-		query += ` AND assignee_id = ?`
+		query += fmt.Sprintf(` AND assignee_id = $%d`, nextPlaceholder)
 		args = append(args, *assigneeID)
+		nextPlaceholder++
 	}
 
-	query += ` ORDER BY created_at DESC LIMIT ? OFFSET ?`
+	query += fmt.Sprintf(` ORDER BY created_at DESC, id DESC LIMIT $%d OFFSET $%d`, nextPlaceholder, nextPlaceholder+1)
 	args = append(args, limit, offset)
 
 	rows, err := r.db.QueryContext(ctx, query, args...)
@@ -116,7 +116,7 @@ func (r *TaskRepository) getByIDWithQuerier(
 		SELECT id, title, description, status, assignee_id,
 		       completed_at, team_id, created_by, created_at, updated_at
 		FROM tasks
-		WHERE id = ?
+		WHERE id = $1
 	`, id)
 
 	return scanTask(row)
@@ -177,16 +177,17 @@ func (r *TaskRepository) Update(ctx context.Context, userID int64, task models.T
 
 	_, err = tx.ExecContext(ctx, `
 	UPDATE tasks
-		SET title = ?,
-			description = ?,
-			status = ?,
-			assignee_id = ?,
+		SET title = $1,
+			description = $2,
+			status = $3,
+			assignee_id = $4,
 			completed_at = CASE
-				WHEN ? = 'done' AND ? <> 'done' THEN CURRENT_TIMESTAMP
-				WHEN ? <> 'done' THEN NULL
+				WHEN $5 = 'done' AND $6 <> 'done' THEN CURRENT_TIMESTAMP
+				WHEN $7 <> 'done' THEN NULL
 				ELSE completed_at
-			END
-		WHERE id = ?
+			END,
+			updated_at = CURRENT_TIMESTAMP
+		WHERE id = $8
 	`,
 		task.Title,
 		task.Description,
@@ -236,7 +237,7 @@ func (r *TaskRepository) Update(ctx context.Context, userID int64, task models.T
 func insertTaskHistory(ctx context.Context, tx *sql.Tx, taskID, userID int64, fieldName, oldValue, newValue string) error {
 	_, err := tx.ExecContext(ctx, `
 		INSERT INTO task_history(task_id, changed_by, field_name, old_value, new_value)
-		VALUES (?, ?, ?, ?, ?)
+		VALUES ($1, $2, $3, $4, $5)
 	`, taskID, userID, fieldName, oldValue, newValue)
 	if err != nil {
 		return fmt.Errorf("insert task history for %s: %w", fieldName, err)
@@ -255,8 +256,8 @@ func (r *TaskRepository) History(ctx context.Context, taskID int64) ([]models.Ta
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT id, task_id, changed_by, field_name, old_value, new_value, created_at
 		FROM task_history
-		WHERE task_id = ?
-		ORDER BY created_at DESC
+		WHERE task_id = $1
+		ORDER BY created_at DESC, id DESC
 	`, taskID)
 	if err != nil {
 		return nil, fmt.Errorf("list task history: %w", err)

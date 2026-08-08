@@ -9,18 +9,18 @@ import (
 )
 
 type Config struct {
-	AppPort   string `yaml:"app_port"`
-	MySQLDSN  string `yaml:"mysql_dsn"`
-	RedisAddr string `yaml:"redis_addr"`
-	JWTSecret string `yaml:"jwt_secret"`
+	AppPort     string `yaml:"app_port"`
+	PostgresDSN string `yaml:"postgres_dsn"`
+	RedisAddr   string `yaml:"redis_addr"`
+	JWTSecret   string `yaml:"jwt_secret"`
 }
 
 func Load() Config {
 	cfg := Config{
-		AppPort:   "8080",
-		MySQLDSN:  "root:root@tcp(localhost:3306)/task_manager?parseTime=true",
-		RedisAddr: "localhost:6379",
-		JWTSecret: "secret",
+		AppPort:     "8080",
+		PostgresDSN: "postgres://postgres:postgres@localhost:5432/task_manager?sslmode=disable",
+		RedisAddr:   "localhost:6379",
+		JWTSecret:   "secret",
 	}
 
 	configPath := getEnv("CONFIG_PATH", "config.yaml")
@@ -34,7 +34,7 @@ func Load() Config {
 	}
 
 	cfg.AppPort = getEnv("APP_PORT", cfg.AppPort)
-	cfg.MySQLDSN = getEnv("MYSQL_DSN", cfg.MySQLDSN)
+	cfg.PostgresDSN = getEnv("POSTGRES_DSN", cfg.PostgresDSN)
 	cfg.RedisAddr = getEnv("REDIS_ADDR", cfg.RedisAddr)
 	cfg.JWTSecret = getEnv("JWT_SECRET", cfg.JWTSecret)
 

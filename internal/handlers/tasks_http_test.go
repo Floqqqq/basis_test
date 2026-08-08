@@ -63,7 +63,7 @@ func TestTaskHandlerUpdateReturnsNotFound(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta(`
 			SELECT id, title, description, status, assignee_id, completed_at, team_id, created_by, created_at, updated_at
 			FROM tasks
-			WHERE id = ?
+			WHERE id = $1
 	`)).
 		WithArgs(int64(404)).
 		WillReturnError(sql.ErrNoRows)
@@ -87,7 +87,7 @@ func TestTaskHandlerListReturnsStorageError(t *testing.T) {
 
 	mock.ExpectQuery(regexp.QuoteMeta(`
 		SELECT EXISTS(
-			SELECT 1 FROM team_members WHERE team_id = ? AND user_id = ?
+			SELECT 1 FROM team_members WHERE team_id = $1 AND user_id = $2
 		)
 	`)).
 		WithArgs(int64(1), int64(42)).
@@ -96,8 +96,8 @@ func TestTaskHandlerListReturnsStorageError(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta(`
 			SELECT id, title, description, status, assignee_id, completed_at, team_id, created_by, created_at, updated_at
 			FROM tasks
-			WHERE team_id = ?
-	 ORDER BY created_at DESC LIMIT ? OFFSET ?`)).
+			WHERE team_id = $1
+	 ORDER BY created_at DESC, id DESC LIMIT $2 OFFSET $3`)).
 		WithArgs(int64(1), 20, 0).
 		WillReturnError(storageErr)
 

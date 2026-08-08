@@ -19,10 +19,10 @@ func TestTeamRepositoryCreateCreatesTeamAndOwnerInTransaction(t *testing.T) {
 	repo := NewTeamRepository(db)
 
 	mock.ExpectBegin()
-	mock.ExpectExec(regexp.QuoteMeta(`INSERT INTO teams(name, created_by) VALUES (?, ?)`)).
+	mock.ExpectQuery(regexp.QuoteMeta(`INSERT INTO teams(name, created_by) VALUES ($1, $2) RETURNING id`)).
 		WithArgs("Team", int64(10)).
-		WillReturnResult(sqlmock.NewResult(5, 1))
-	mock.ExpectExec(regexp.QuoteMeta(`INSERT INTO team_members(user_id, team_id, role) VALUES (?, ?, 'owner')`)).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(int64(5)))
+	mock.ExpectExec(regexp.QuoteMeta(`INSERT INTO team_members(user_id, team_id, role) VALUES ($1, $2, 'owner')`)).
 		WithArgs(int64(10), int64(5)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
@@ -56,7 +56,7 @@ func TestTeamRepositoryListByUserClosesRows(t *testing.T) {
 		SELECT t.id, t.name, t.created_by, t.created_at
 		FROM teams t
 		JOIN team_members tm ON tm.team_id = t.id
-		WHERE tm.user_id = ?
+		WHERE tm.user_id = $1
 		ORDER BY t.created_at DESC
 	`)).
 		WithArgs(int64(10)).
@@ -87,7 +87,7 @@ func TestTeamRepositoryIsTeamMember(t *testing.T) {
 	rows := sqlmock.NewRows([]string{"exists"}).AddRow(true)
 	mock.ExpectQuery(regexp.QuoteMeta(`
 		SELECT EXISTS(
-			SELECT 1 FROM team_members WHERE team_id = ? AND user_id = ?
+			SELECT 1 FROM team_members WHERE team_id = $1 AND user_id = $2
 		)
 	`)).
 		WithArgs(int64(5), int64(10)).

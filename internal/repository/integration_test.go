@@ -12,38 +12,38 @@ import (
 	"testing"
 	"time"
 
-	_ "github.com/go-sql-driver/mysql"
+	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/testcontainers/testcontainers-go"
-	tcmysql "github.com/testcontainers/testcontainers-go/modules/mysql"
+	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
 	"task-manager/internal/models"
 	"task-manager/internal/service"
 )
 
-func TestRepositoryIntegrationWithMySQLContainer(t *testing.T) {
+func TestRepositoryIntegrationWithPostgresContainer(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
-	mysqlContainer, err := runMySQLContainer(ctx)
+	postgresContainer, err := runPostgresContainer(ctx)
 	if err != nil {
 		skipIfDockerUnavailable(t, err)
-		t.Fatalf("start mysql container: %v", err)
+		t.Fatalf("start postgres container: %v", err)
 	}
-	testcontainers.CleanupContainer(t, mysqlContainer)
+	testcontainers.CleanupContainer(t, postgresContainer)
 
-	dsn, err := mysqlContainer.ConnectionString(ctx, "parseTime=true")
+	dsn, err := postgresContainer.ConnectionString(ctx, "sslmode=disable")
 	if err != nil {
-		t.Fatalf("mysql connection string: %v", err)
+		t.Fatalf("postgres connection string: %v", err)
 	}
 
-	db, err := sql.Open("mysql", dsn)
+	db, err := sql.Open("pgx", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open() error = %v", err)
 	}
 	defer db.Close()
 
 	if err := pingDB(ctx, db); err != nil {
-		t.Fatalf("ping mysql: %v", err)
+		t.Fatalf("ping postgres: %v", err)
 	}
 	applyMigrations(t, ctx, db)
 	assertTablesExist(t, ctx, db)
@@ -183,9 +183,13 @@ func assertTablesExist(t *testing.T, ctx context.Context, db *sql.DB) {
 		"task_comments": false,
 	}
 
-	rows, err := db.QueryContext(ctx, `SHOW TABLES`)
+	rows, err := db.QueryContext(ctx, `
+		SELECT table_name
+		FROM information_schema.tables
+		WHERE table_schema = 'public'
+	`)
 	if err != nil {
-		t.Fatalf("SHOW TABLES error = %v", err)
+		t.Fatalf("list tables error = %v", err)
 	}
 	defer rows.Close()
 
@@ -221,13 +225,13 @@ func assertTeamStatsReport(t *testing.T, ctx context.Context, db *sql.DB, teamID
 			COUNT(DISTINCT tm.user_id) AS members_count,
 			COUNT(DISTINCT CASE
 				WHEN tasks.status = 'done'
-				AND tasks.completed_at >= NOW() - INTERVAL 7 DAY
+				AND tasks.completed_at >= CURRENT_TIMESTAMP - INTERVAL '7 days'
 				THEN tasks.id
 			END) AS done_tasks_last_7_days
 		FROM teams t
 		LEFT JOIN team_members tm ON tm.team_id = t.id
 		LEFT JOIN tasks ON tasks.team_id = t.id
-		WHERE t.id = ?
+		WHERE t.id = $1
 		GROUP BY t.id, t.name
 	`, teamID).Scan(&gotTeamID, &name, &membersCount, &doneTasksLast7Days)
 	if err != nil {
@@ -258,10 +262,10 @@ func assertTopUsersReport(t *testing.T, ctx context.Context, db *sql.DB, teamID,
 					ORDER BY COUNT(*) DESC
 				) AS rn
 			FROM tasks t
-			WHERE t.created_at >= DATE_FORMAT(CURRENT_DATE, '%Y-%m-01')
+			WHERE t.created_at >= date_trunc('month', CURRENT_DATE)
 			GROUP BY t.team_id, t.created_by
 		) ranked
-		WHERE rn <= 3 AND team_id = ?
+		WHERE rn <= 3 AND team_id = $1
 	`, teamID).Scan(&gotTeamID, &userID, &tasksCount, &rank)
 	if err != nil {
 		t.Fatalf("top users query error = %v", err)
@@ -292,18 +296,19 @@ func assertInvalidAssigneesReport(t *testing.T, ctx context.Context, db *sql.DB)
 	}
 }
 
-func runMySQLContainer(ctx context.Context) (container *tcmysql.MySQLContainer, err error) {
+func runPostgresContainer(ctx context.Context) (container *tcpostgres.PostgresContainer, err error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			err = fmt.Errorf("start mysql container: %v", recovered)
+			err = fmt.Errorf("start postgres container: %v", recovered)
 		}
 	}()
 
-	return tcmysql.Run(ctx,
-		"mysql:8.0",
-		tcmysql.WithDatabase("task_manager_test"),
-		tcmysql.WithUsername("test"),
-		tcmysql.WithPassword("test"),
+	return tcpostgres.Run(ctx,
+		"postgres:16-alpine",
+		tcpostgres.WithDatabase("task_manager_test"),
+		tcpostgres.WithUsername("test"),
+		tcpostgres.WithPassword("test"),
+		tcpostgres.BasicWaitStrategies(),
 	)
 }
 
@@ -325,6 +330,7 @@ func skipIfDockerUnavailable(t *testing.T, err error) {
 	if errors.Is(err, context.Canceled) ||
 		strings.Contains(message, "cannot connect to the docker daemon") ||
 		strings.Contains(message, "docker daemon") ||
+		strings.Contains(message, "rootless docker not found") ||
 		strings.Contains(message, "connection refused") ||
 		strings.Contains(message, "permission denied") {
 		t.Skipf("Docker is not available for testcontainers: %v", err)

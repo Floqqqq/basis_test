@@ -2,7 +2,7 @@
 
 REST API сервис для управления задачами в командах.
 
-Проект реализован на Go и поддерживает регистрацию пользователей, JWT-аутентификацию, командную работу, ролевую модель `owner/admin/member`, создание и обновление задач, историю изменений задач, Redis-кеширование, rate limiting, Prometheus-метрики, SQL-отчёты на MySQL 8, Docker Compose и тесты.
+Проект реализован на Go и поддерживает регистрацию пользователей, JWT-аутентификацию, командную работу, ролевую модель `owner/admin/member`, создание и обновление задач, историю изменений задач, Redis-кеширование, rate limiting, Prometheus-метрики, SQL-отчёты на PostgreSQL, Docker Compose и тесты.
 
 ## Описание проекта
 
@@ -24,7 +24,7 @@ REST API сервис для управления задачами в коман
 В проекте реализованы обязательные части ТЗ:
 
 * Go backend;
-* MySQL;
+* PostgreSQL;
 * Redis;
 * Docker и Docker Compose;
 * регистрация и логин;
@@ -36,11 +36,11 @@ REST API сервис для управления задачами в коман
 * таблица комментариев к задачам;
 * Redis-кеширование списка задач команды;
 * сложные SQL-запросы;
-* индексы MySQL;
+* индексы PostgreSQL;
 * connection pooling;
 * пагинация на уровне БД;
 * unit-тесты;
-* интеграционные тесты с MySQL через testcontainers;
+* интеграционные тесты с PostgreSQL через testcontainers;
 * circuit breaker для mock email/invite service;
 * rate limiting;
 * graceful shutdown;
@@ -53,8 +53,8 @@ REST API сервис для управления задачами в коман
 | --------------------- | ----------------------------------- |
 | Язык                  | Go 1.22                             |
 | HTTP router           | `github.com/go-chi/chi/v5`          |
-| База данных           | MySQL 8                             |
-| MySQL driver          | `github.com/go-sql-driver/mysql`    |
+| База данных           | PostgreSQL 16                       |
+| PostgreSQL driver     | `github.com/jackc/pgx/v5`           |
 | Кеш                   | Redis                               |
 | Redis client          | `github.com/redis/go-redis/v9`      |
 | Авторизация           | JWT, `github.com/golang-jwt/jwt/v5` |
@@ -100,13 +100,13 @@ REST API сервис для управления задачами в коман
 | --------------------- | ------------------------------------------------------------------------------------------------------ |
 | `cmd/api`             | Точка входа приложения, сборка зависимостей, настройка router, запуск HTTP-сервера и graceful shutdown |
 | `internal/config`     | Загрузка конфигурации из `config.yaml` и ENV                                                           |
-| `internal/db`         | Подключение к MySQL, retry, connection pooling                                                         |
+| `internal/db`         | Подключение к PostgreSQL, retry, connection pooling                                                    |
 | `internal/redis`      | Подключение к Redis с retry                                                                            |
 | `internal/cache`      | Redis-кеширование списка задач                                                                         |
 | `internal/handlers`   | HTTP handlers, валидация request body/query params, JSON-ответы                                        |
 | `internal/middleware` | JWT middleware, rate limiting, Prometheus middleware                                                   |
 | `internal/models`     | Основные модели данных                                                                                 |
-| `internal/repository` | Работа с MySQL                                                                                         |
+| `internal/repository` | Работа с PostgreSQL                                                                                    |
 | `internal/service`    | Бизнес-логика, JWT/bcrypt, права доступа, circuit breaker                                              |
 | `migrations`          | SQL-схема, связи и индексы                                                                             |
 
@@ -133,7 +133,7 @@ http://localhost:18080
 | Сервис | Внутренний порт | Host-порт |
 | ------ | --------------: | --------: |
 | API    |          `8080` |   `18080` |
-| MySQL  |          `3306` |    `3307` |
+| PostgreSQL |       `5432` |    `5433` |
 | Redis  |          `6379` |    `6380` |
 
 Если нужно поменять host-порт API:
@@ -151,7 +151,7 @@ APP_HOST_PORT=8080 docker compose up --build
 Если нужно поменять все host-порты:
 
 ```bash
-APP_HOST_PORT=18080 MYSQL_HOST_PORT=3307 REDIS_HOST_PORT=6380 docker compose up --build
+APP_HOST_PORT=18080 POSTGRES_HOST_PORT=5433 REDIS_HOST_PORT=6380 docker compose up --build
 ```
 
 ## Docker Compose
@@ -159,19 +159,19 @@ APP_HOST_PORT=18080 MYSQL_HOST_PORT=3307 REDIS_HOST_PORT=6380 docker compose up 
 В `docker-compose.yml` поднимаются:
 
 * приложение Go;
-* MySQL 8;
+* PostgreSQL 16;
 * Redis 7.
 
-MySQL и Redis имеют healthcheck. Приложение стартует после того, как MySQL и Redis становятся healthy.
+PostgreSQL и Redis имеют healthcheck. Приложение стартует после того, как PostgreSQL и Redis становятся healthy.
 
-SQL-миграции из директории `migrations/` автоматически применяются при первом создании контейнера MySQL:
+SQL-миграции из директории `migrations/` автоматически применяются при первом создании контейнера PostgreSQL:
 
 ```text
 migrations/001_init.sql
 migrations/002_indexes.sql
 ```
 
-Если база уже была создана раньше, MySQL не применит init scripts повторно. Чтобы пересоздать БД с нуля:
+Если база уже была создана раньше, PostgreSQL не применит init scripts повторно. Чтобы пересоздать БД с нуля:
 
 ```bash
 docker compose down -v
@@ -192,7 +192,7 @@ config.yaml
 
 ```yaml
 app_port: "8080"
-mysql_dsn: "root:root@tcp(localhost:3306)/task_manager?parseTime=true"
+postgres_dsn: "postgres://postgres:postgres@localhost:5433/task_manager?sslmode=disable"
 redis_addr: "localhost:6379"
 jwt_secret: "secret"
 ```
@@ -210,8 +210,8 @@ ENV-переменные имеют приоритет над YAML.
 | `CONFIG_PATH`     | Путь к YAML-конфигу                          | `config.yaml`                                               |
 | `APP_PORT`        | Порт HTTP-сервера внутри контейнера/процесса | `8080`                                                      |
 | `APP_HOST_PORT`   | Host-порт API в Docker Compose               | `18080`                                                     |
-| `MYSQL_DSN`       | DSN подключения к MySQL                      | `root:root@tcp(localhost:3306)/task_manager?parseTime=true` |
-| `MYSQL_HOST_PORT` | Host-порт MySQL в Docker Compose             | `3307`                                                      |
+| `POSTGRES_DSN`       | DSN подключения к PostgreSQL                 | `postgres://postgres:postgres@localhost:5432/task_manager?sslmode=disable` |
+| `POSTGRES_HOST_PORT` | Host-порт PostgreSQL в Docker Compose        | `5433`                                                      |
 | `REDIS_ADDR`      | Адрес Redis для приложения                   | `localhost:6379`                                            |
 | `REDIS_HOST_PORT` | Host-порт Redis в Docker Compose             | `6380`                                                      |
 | `JWT_SECRET`      | Секрет для подписи JWT                       | `secret`                                                    |
@@ -221,7 +221,7 @@ ENV-переменные имеют приоритет над YAML.
 ```yaml
 APP_PORT: "8080"
 JWT_SECRET: "secret"
-MYSQL_DSN: "root:root@tcp(mysql:3306)/task_manager?parseTime=true"
+POSTGRES_DSN: "postgres://postgres:postgres@postgres:5432/task_manager?sslmode=disable"
 REDIS_ADDR: "redis:6379"
 ```
 
@@ -265,7 +265,7 @@ migrations/002_indexes.sql
 | `task_comments.task_id -> tasks.id`   | Комментарии конкретной задачи |
 | `task_comments.user_id -> users.id`   | Автор комментария             |
 
-## Индексы MySQL
+## Индексы PostgreSQL
 
 Индексы вынесены в миграцию:
 
@@ -768,7 +768,7 @@ GET /api/v1/reports/top-users
 
 Возвращает топ-3 пользователей по количеству созданных задач в каждой доступной команде за текущий календарный месяц.
 
-В запросе используется оконная функция MySQL 8:
+В запросе используется оконная функция PostgreSQL:
 
 ```sql
 ROW_NUMBER() OVER (
@@ -867,7 +867,7 @@ team_tasks:1:status=todo:assignee=2:limit=20:offset=0
 * при создании задачи;
 * при обновлении задачи.
 
-Если Redis недоступен при чтении списка задач, сервис не должен ломать основной сценарий и может получить данные из MySQL.
+Если Redis недоступен при чтении списка задач, сервис не должен ломать основной сценарий и может получить данные из PostgreSQL.
 
 ## Rate limiting
 
@@ -945,7 +945,7 @@ SIGTERM
 
 * HTTP server останавливается через `server.Shutdown`;
 * используется timeout `10s`;
-* закрывается подключение к MySQL;
+* закрывается подключение к PostgreSQL;
 * закрывается подключение к Redis;
 * в лог пишется старт и остановка сервера.
 
@@ -1077,7 +1077,7 @@ curl -s http://localhost:18080/metrics
 * unit-тесты config;
 * Redis-тесты через `redismock`;
 * repository-тесты через `sqlmock`;
-* integration-тесты repository-слоя с MySQL через `testcontainers`.
+* integration-тесты repository-слоя с PostgreSQL через `testcontainers`.
 
 Запуск всех тестов:
 
@@ -1123,7 +1123,7 @@ go tool cover -func=coverage.out
 * `internal/middleware/metrics.go`;
 * часть методов `internal/repository`.
 
-Integration-тесты используют MySQL 8 через `testcontainers`, поэтому для их запуска должен быть включён Docker Desktop.
+Integration-тесты используют PostgreSQL 16 через `testcontainers`, поэтому для их запуска должен быть включён Docker Desktop.
 
 Отдельный запуск integration-тестов:
 
@@ -1229,7 +1229,7 @@ Cannot connect to the Docker daemon
 или:
 
 ```text
-testcontainers cannot start MySQL container
+testcontainers cannot start PostgreSQL container
 ```
 
 Решение:
@@ -1258,14 +1258,14 @@ APP_HOST_PORT=18081 docker compose up --build
 APP_HOST_PORT=8080 docker compose up --build
 ```
 
-### Порт MySQL 3306 занят
+### Порт PostgreSQL 5432 занят
 
-Обычному запуску это не мешает, потому что MySQL из Docker Compose публикуется на host-порт `3307`.
+Обычному запуску это не мешает, потому что PostgreSQL из Docker Compose публикуется на host-порт `5433`.
 
-Если нужен другой debug-порт MySQL:
+Если нужен другой debug-порт PostgreSQL:
 
 ```bash
-MYSQL_HOST_PORT=13307 docker compose up --build
+POSTGRES_HOST_PORT=15432 docker compose up --build
 ```
 
 ### Порт Redis 6379 занят
@@ -1313,10 +1313,10 @@ curl -s http://localhost:18080/api/v1/teams \
 | Требование                 | Статус                 | Комментарий                                                                     |
 | -------------------------- | ---------------------- | ------------------------------------------------------------------------------- |
 | Go                         | Выполнено              | Backend написан на Go                                                           |
-| MySQL                      | Выполнено              | Используется MySQL 8                                                            |
+| PostgreSQL                 | Выполнено              | Используется PostgreSQL 16                                                      |
 | Redis                      | Выполнено              | Используется для кеша и rate limiting                                           |
 | Docker                     | Выполнено              | Есть Dockerfile                                                                 |
-| Docker Compose             | Выполнено              | Поднимает app, MySQL, Redis                                                     |
+| Docker Compose             | Выполнено              | Поднимает app, PostgreSQL, Redis                                                |
 | Git                        | Выполнено              | Проект готов для хранения в Git                                                 |
 | Регистрация                | Выполнено              | `POST /api/v1/register`                                                         |
 | Аутентификация             | Выполнено              | `POST /api/v1/login`, JWT                                                       |
@@ -1329,11 +1329,11 @@ curl -s http://localhost:18080/api/v1/teams \
 | Оконная функция            | Выполнено              | `GET /api/v1/reports/top-users`                                                 |
 | Проверка связанных таблиц  | Выполнено              | `GET /api/v1/reports/invalid-assignees`                                         |
 | Redis cache TTL 5 минут    | Выполнено              | Кеш списка задач                                                                |
-| Индексы MySQL              | Выполнено              | `migrations/002_indexes.sql`                                                    |
-| Connection pooling         | Выполнено              | Настроено в `internal/db/mysql.go`                                              |
+| Индексы PostgreSQL         | Выполнено              | `migrations/002_indexes.sql`                                                    |
+| Connection pooling         | Выполнено              | Настроено в `internal/db/postgres.go`                                           |
 | Пагинация на уровне БД     | Выполнено              | `LIMIT/OFFSET`                                                                  |
 | Unit-тесты                 | Выполнено              | Есть тесты сервисов, handlers, middleware, repository                           |
-| Integration-тесты с MySQL  | Выполнено              | Используется `testcontainers`                                                   |
+| Integration-тесты с PostgreSQL | Выполнено          | Используется `testcontainers`                                                   |
 | 85% покрытия               | Не выполнено полностью | Текущее покрытие около `50.1%`; требуется добавить тесты                        |
 | Circuit breaker            | Выполнено              | Для mock invite/email service                                                   |
 | Rate limiting              | Выполнено              | 100 запросов/мин; IP для register/login, user_id для защищённых endpoint        |
@@ -1355,9 +1355,9 @@ docker compose up --build
 http://localhost:18080
 ```
 
-База данных MySQL и Redis поднимаются автоматически через Docker Compose.
+База данных PostgreSQL и Redis поднимаются автоматически через Docker Compose.
 
-Миграции из директории `migrations/` применяются при первом старте MySQL-контейнера.
+Миграции из директории `migrations/` применяются при первом старте PostgreSQL-контейнера.
 
 Основные сценарии проверки:
 

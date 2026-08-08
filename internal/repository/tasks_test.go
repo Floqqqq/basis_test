@@ -31,8 +31,8 @@ func TestTaskRepositoryListBuildsFilteredQuery(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta(`
 			SELECT id, title, description, status, assignee_id, completed_at, team_id, created_by, created_at, updated_at
 			FROM tasks
-			WHERE team_id = ?
-	 AND status = ? AND assignee_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?`)).
+			WHERE team_id = $1
+	 AND status = $2 AND assignee_id = $3 ORDER BY created_at DESC, id DESC LIMIT $4 OFFSET $5`)).
 		WithArgs(int64(2), "todo", assigneeID, 20, 40).
 		WillReturnRows(rows).
 		RowsWillBeClosed()
@@ -61,7 +61,7 @@ func TestTaskRepositoryGetByIDNotFound(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta(`
 			SELECT id, title, description, status, assignee_id, completed_at, team_id, created_by, created_at, updated_at
 			FROM tasks
-			WHERE id = ?
+			WHERE id = $1
 	`)).
 		WithArgs(int64(404)).
 		WillReturnError(sql.ErrNoRows)
@@ -96,28 +96,29 @@ func TestTaskRepositoryUpdateWritesHistoryInTransaction(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta(`
 			SELECT id, title, description, status, assignee_id, completed_at, team_id, created_by, created_at, updated_at
 			FROM tasks
-			WHERE id = ?
+			WHERE id = $1
 	`)).
 		WithArgs(int64(1)).
 		WillReturnRows(oldRows)
 	mock.ExpectExec(regexp.QuoteMeta(`
 	UPDATE tasks
-		SET title = ?,
-			description = ?,
-			status = ?,
-			assignee_id = ?,
+		SET title = $1,
+			description = $2,
+			status = $3,
+			assignee_id = $4,
 			completed_at = CASE
-				WHEN ? = 'done' AND ? <> 'done' THEN CURRENT_TIMESTAMP
-				WHEN ? <> 'done' THEN NULL
+				WHEN $5 = 'done' AND $6 <> 'done' THEN CURRENT_TIMESTAMP
+				WHEN $7 <> 'done' THEN NULL
 				ELSE completed_at
-			END
-		WHERE id = ?
+			END,
+			updated_at = CURRENT_TIMESTAMP
+		WHERE id = $8
 	`)).
 		WithArgs("Task", "Desc", "done", nil, "done", "todo", "done", int64(1)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(regexp.QuoteMeta(`
 		INSERT INTO task_history(task_id, changed_by, field_name, old_value, new_value)
-		VALUES (?, ?, ?, ?, ?)
+		VALUES ($1, $2, $3, $4, $5)
 	`)).
 		WithArgs(int64(1), int64(9), "status", "todo", "done").
 		WillReturnResult(sqlmock.NewResult(1, 1))

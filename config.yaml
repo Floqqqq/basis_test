@@ -1,4 +1,4 @@
 app_port: "8080"
-mysql_dsn: "root:root@tcp(localhost:3306)/task_manager?parseTime=true"
+postgres_dsn: "postgres://postgres:postgres@localhost:5433/task_manager?sslmode=disable"
 redis_addr: "localhost:6379"
 jwt_secret: "secret"
