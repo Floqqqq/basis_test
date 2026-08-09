@@ -1,4 +1,0 @@
-app_port: "8080"
-postgres_dsn: "postgres://postgres:postgres@localhost:5433/task_manager?sslmode=disable"
-redis_addr: "localhost:6379"
-jwt_secret: "secret"
