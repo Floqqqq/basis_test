@@ -5,11 +5,11 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"log/slog"
 
 	"go.opentelemetry.io/otel/attribute"
 
 	"task-manager/internal/domain"
+	"task-manager/internal/events"
 	"task-manager/internal/models"
 )
 
@@ -19,19 +19,15 @@ type TeamRepository interface {
 	ListMembers(ctx context.Context, teamID int64) ([]models.TeamMember, error)
 	GetUserRole(ctx context.Context, teamID, userID int64) (string, error)
 	IsTeamMember(ctx context.Context, teamID, userID int64) (bool, error)
-	Invite(ctx context.Context, teamID, userID int64, role string) error
+	Invite(ctx context.Context, teamID, userID int64, role string, event events.Event) error
 }
 
 type TeamService struct {
-	teams        TeamRepository
-	inviteSender InviteSender
+	teams TeamRepository
 }
 
-func NewTeamService(teams TeamRepository, inviteSender InviteSender) *TeamService {
-	return &TeamService{
-		teams:        teams,
-		inviteSender: inviteSender,
-	}
+func NewTeamService(teams TeamRepository) *TeamService {
+	return &TeamService{teams: teams}
 }
 
 func (s *TeamService) Create(ctx context.Context, userID int64, name string) (teamID int64, err error) {
@@ -97,7 +93,12 @@ func (s *TeamService) Invite(ctx context.Context, currentUserID, teamID, invited
 		return ErrForbidden
 	}
 
-	if err := s.teams.Invite(ctx, teamID, invitedUserID, role); err != nil {
+	event := events.New(events.TeamMemberAdded, currentUserID, events.TeamMemberPayload{
+		TeamID: teamID,
+		UserID: invitedUserID,
+		Role:   role,
+	})
+	if err := s.teams.Invite(ctx, teamID, invitedUserID, role, event); err != nil {
 		if errors.Is(err, domain.ErrUserNotFound) {
 			return ErrNotFound
 		}
@@ -105,12 +106,6 @@ func (s *TeamService) Invite(ctx context.Context, currentUserID, teamID, invited
 			return ErrConflict
 		}
 		return fmt.Errorf("invite team member: %w", err)
-	}
-
-	if s.inviteSender != nil {
-		if err := s.inviteSender.SendInvite(ctx, teamID, invitedUserID, role); err != nil {
-			slog.Warn("invite sender failed", "team_id", teamID, "user_id", invitedUserID, "error", err)
-		}
 	}
 
 	return nil

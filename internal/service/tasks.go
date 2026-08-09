@@ -11,6 +11,7 @@ import (
 
 	"go.opentelemetry.io/otel/attribute"
 
+	"task-manager/internal/events"
 	"task-manager/internal/models"
 )
 
@@ -73,10 +74,10 @@ func (p *TaskPolicy) canAccessTask(ctx context.Context, task *models.Task, userI
 }
 
 type TaskRepository interface {
-	Create(ctx context.Context, task models.Task) (int64, error)
+	Create(ctx context.Context, task models.Task, eventFactory func(int64) events.Event) (int64, error)
 	List(ctx context.Context, teamID int64, status string, assigneeID *int64, limit, offset int) ([]models.Task, error)
 	GetByID(ctx context.Context, id int64) (*models.Task, error)
-	Update(ctx context.Context, userID int64, task models.Task) error
+	Update(ctx context.Context, userID int64, task models.Task, domainEvents []events.Event) error
 	History(ctx context.Context, taskID int64) ([]models.TaskHistory, error)
 	CreateComment(ctx context.Context, taskID, userID int64, comment string) (*models.TaskComment, error)
 	ListComments(ctx context.Context, taskID int64) ([]models.TaskComment, error)
@@ -135,7 +136,14 @@ func (s *TaskService) Create(ctx context.Context, userID int64, task models.Task
 	}
 
 	task.CreatedBy = userID
-	taskID, err = s.tasks.Create(ctx, task)
+	taskID, err = s.tasks.Create(ctx, task, func(taskID int64) events.Event {
+		return events.New(events.TaskCreated, userID, events.TaskPayload{
+			TaskID:     taskID,
+			TeamID:     task.TeamID,
+			Status:     task.Status,
+			AssigneeID: task.AssigneeID,
+		})
+	})
 	if err != nil {
 		return 0, fmt.Errorf("create task: %w", err)
 	}
@@ -274,12 +282,59 @@ func (s *TaskService) Update(ctx context.Context, userID, taskID int64, update T
 		updated.AssigneeID = update.AssigneeID
 	}
 
-	if err := s.tasks.Update(ctx, userID, updated); err != nil {
+	domainEvents := taskUpdateEvents(userID, task, &updated)
+	if len(domainEvents) == 0 {
+		return nil
+	}
+
+	if err := s.tasks.Update(ctx, userID, updated, domainEvents); err != nil {
 		return fmt.Errorf("update task: %w", err)
 	}
 
 	s.invalidateTeamCache(ctx, task.TeamID)
 	return nil
+}
+
+func taskUpdateEvents(actorID int64, oldTask, updatedTask *models.Task) []events.Event {
+	result := make([]events.Event, 0, 3)
+	changedFields := make([]string, 0, 2)
+	if oldTask.Title != updatedTask.Title {
+		changedFields = append(changedFields, "title")
+	}
+	if oldTask.Description != updatedTask.Description {
+		changedFields = append(changedFields, "description")
+	}
+	if len(changedFields) > 0 {
+		result = append(result, events.New(events.TaskUpdated, actorID, events.TaskPayload{
+			TaskID:        updatedTask.ID,
+			TeamID:        updatedTask.TeamID,
+			ChangedFields: changedFields,
+		}))
+	}
+	if !equalOptionalInt64(oldTask.AssigneeID, updatedTask.AssigneeID) {
+		result = append(result, events.New(events.TaskAssigned, actorID, events.TaskPayload{
+			TaskID:             updatedTask.ID,
+			TeamID:             updatedTask.TeamID,
+			AssigneeID:         updatedTask.AssigneeID,
+			PreviousAssigneeID: oldTask.AssigneeID,
+		}))
+	}
+	if oldTask.Status != updatedTask.Status {
+		result = append(result, events.New(events.TaskStatusChanged, actorID, events.TaskPayload{
+			TaskID:         updatedTask.ID,
+			TeamID:         updatedTask.TeamID,
+			Status:         updatedTask.Status,
+			PreviousStatus: oldTask.Status,
+		}))
+	}
+	return result
+}
+
+func equalOptionalInt64(left, right *int64) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return *left == *right
 }
 
 func (s *TaskService) History(ctx context.Context, userID, taskID int64) (history []models.TaskHistory, err error) {

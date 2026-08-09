@@ -131,7 +131,7 @@ func TestTaskRepositoryUpdateWritesHistoryInTransaction(t *testing.T) {
 		Status:      "done",
 		TeamID:      2,
 		CreatedBy:   3,
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}

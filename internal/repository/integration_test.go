@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	"github.com/testcontainers/testcontainers-go"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
+	"task-manager/internal/events"
 	"task-manager/internal/models"
 	"task-manager/internal/service"
 )
@@ -78,7 +80,7 @@ func TestRepositoryIntegrationWithPostgresContainer(t *testing.T) {
 		t.Fatalf("owner role = %q, want owner", role)
 	}
 
-	if err := teams.Invite(ctx, teamID, memberID, "member"); err != nil {
+	if err := teams.Invite(ctx, teamID, memberID, "member", events.New(events.TeamMemberAdded, ownerID, events.TeamMemberPayload{TeamID: teamID, UserID: memberID, Role: "member"})); err != nil {
 		t.Fatalf("teams.Invite() error = %v", err)
 	}
 	isMember, err := teams.IsTeamMember(ctx, teamID, memberID)
@@ -102,6 +104,8 @@ func TestRepositoryIntegrationWithPostgresContainer(t *testing.T) {
 		AssigneeID: &memberID,
 		TeamID:     teamID,
 		CreatedBy:  ownerID,
+	}, func(taskID int64) events.Event {
+		return events.New(events.TaskCreated, ownerID, events.TaskPayload{TaskID: taskID, TeamID: teamID})
 	})
 	if err != nil {
 		t.Fatalf("tasks.Create() error = %v", err)
@@ -113,7 +117,7 @@ func TestRepositoryIntegrationWithPostgresContainer(t *testing.T) {
 	}
 	task.Status = "done"
 
-	if err := tasks.Update(ctx, ownerID, *task); err != nil {
+	if err := tasks.Update(ctx, ownerID, *task, []events.Event{events.New(events.TaskStatusChanged, ownerID, events.TaskPayload{TaskID: taskID, TeamID: teamID, Status: "done"})}); err != nil {
 		t.Fatalf("tasks.Update() error = %v", err)
 	}
 
@@ -136,6 +140,7 @@ func TestRepositoryIntegrationWithPostgresContainer(t *testing.T) {
 	assertTeamStatsReport(t, ctx, db, teamID)
 	assertTopUsersReport(t, ctx, db, teamID, ownerID)
 	assertInvalidAssigneesReport(t, ctx, db)
+	assertOutboxTransactionsAndClaims(t, ctx, db, tasks, teams, ownerID, outsiderID, teamID)
 }
 
 func applyMigrations(t *testing.T, ctx context.Context, db *sql.DB) {
@@ -175,12 +180,13 @@ func assertTablesExist(t *testing.T, ctx context.Context, db *sql.DB) {
 	t.Helper()
 
 	expected := map[string]bool{
-		"users":         false,
-		"teams":         false,
-		"team_members":  false,
-		"tasks":         false,
-		"task_history":  false,
-		"task_comments": false,
+		"users":               false,
+		"teams":               false,
+		"team_members":        false,
+		"tasks":               false,
+		"task_history":        false,
+		"task_comments":       false,
+		"notification_outbox": false,
 	}
 
 	rows, err := db.QueryContext(ctx, `
@@ -211,6 +217,157 @@ func assertTablesExist(t *testing.T, ctx context.Context, db *sql.DB) {
 			t.Fatalf("table %s was not created", table)
 		}
 	}
+}
+
+func assertOutboxTransactionsAndClaims(
+	t *testing.T,
+	ctx context.Context,
+	db *sql.DB,
+	tasks *TaskRepository,
+	teams *TeamRepository,
+	ownerID, outsiderID, teamID int64,
+) {
+	t.Helper()
+
+	if count := tableCount(t, ctx, db, "notification_outbox"); count != 3 {
+		t.Fatalf("outbox count = %d, want 3 committed business events", count)
+	}
+
+	beforeTasks := tableCount(t, ctx, db, "tasks")
+	_, err := tasks.Create(ctx, models.Task{
+		Title:     "Invalid status",
+		Status:    "invalid",
+		TeamID:    teamID,
+		CreatedBy: ownerID,
+	}, func(taskID int64) events.Event {
+		return events.New(events.TaskCreated, ownerID, events.TaskPayload{TaskID: taskID, TeamID: teamID})
+	})
+	if err == nil {
+		t.Fatal("tasks.Create(invalid status) error = nil, want error")
+	}
+	if count := tableCount(t, ctx, db, "tasks"); count != beforeTasks {
+		t.Fatalf("task count after business rollback = %d, want %d", count, beforeTasks)
+	}
+	if count := tableCount(t, ctx, db, "notification_outbox"); count != 3 {
+		t.Fatalf("outbox count after business rollback = %d, want 3", count)
+	}
+
+	var duplicateEventID string
+	if err := db.QueryRowContext(ctx, `SELECT event_id FROM notification_outbox ORDER BY id LIMIT 1`).Scan(&duplicateEventID); err != nil {
+		t.Fatalf("select existing event id: %v", err)
+	}
+	_, err = tasks.Create(ctx, models.Task{
+		Title:     "Must roll back",
+		Status:    "todo",
+		TeamID:    teamID,
+		CreatedBy: ownerID,
+	}, func(taskID int64) events.Event {
+		event := events.New(events.TaskCreated, ownerID, events.TaskPayload{TaskID: taskID, TeamID: teamID})
+		event.EventID = duplicateEventID
+		return event
+	})
+	if err == nil {
+		t.Fatal("tasks.Create(duplicate event) error = nil, want error")
+	}
+	var rolledBackTasks int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM tasks WHERE title = 'Must roll back'`).Scan(&rolledBackTasks); err != nil {
+		t.Fatalf("count rolled back tasks: %v", err)
+	}
+	if rolledBackTasks != 0 {
+		t.Fatalf("rolled back tasks = %d, want 0", rolledBackTasks)
+	}
+
+	duplicateInvite := events.New(events.TeamMemberAdded, ownerID, events.TeamMemberPayload{TeamID: teamID, UserID: outsiderID, Role: "member"})
+	duplicateInvite.EventID = duplicateEventID
+	if err := teams.Invite(ctx, teamID, outsiderID, "member", duplicateInvite); err == nil {
+		t.Fatal("teams.Invite(duplicate event) error = nil, want error")
+	}
+	if member, err := teams.IsTeamMember(ctx, teamID, outsiderID); err != nil || member {
+		t.Fatalf("outsider membership after rollback = %v, %v; want false, nil", member, err)
+	}
+
+	outbox := NewOutboxRepository(db)
+	start := make(chan struct{})
+	results := make(chan []OutboxEntry, 2)
+	errCh := make(chan error, 2)
+	var workers sync.WaitGroup
+	for range 2 {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			<-start
+			entries, err := outbox.FetchPending(ctx, 2)
+			if err != nil {
+				errCh <- err
+				return
+			}
+			results <- entries
+		}()
+	}
+	close(start)
+	workers.Wait()
+	close(results)
+	close(errCh)
+	for err := range errCh {
+		t.Fatalf("FetchPending() error = %v", err)
+	}
+
+	claimed := make(map[int64]OutboxEntry)
+	for batch := range results {
+		for _, entry := range batch {
+			if _, exists := claimed[entry.ID]; exists {
+				t.Fatalf("outbox event %d claimed by two workers", entry.ID)
+			}
+			claimed[entry.ID] = entry
+		}
+	}
+	if len(claimed) != 3 {
+		t.Fatalf("claimed events = %d, want 3", len(claimed))
+	}
+
+	entries := make([]OutboxEntry, 0, len(claimed))
+	for _, entry := range claimed {
+		entries = append(entries, entry)
+	}
+	if err := outbox.MarkProcessed(ctx, entries[0].ID); err != nil {
+		t.Fatalf("MarkProcessed() error = %v", err)
+	}
+	retryAt := time.Now().Add(time.Minute).UTC().Truncate(time.Microsecond)
+	if err := outbox.MarkFailed(ctx, entries[1].ID, errors.New("delivery failed"), retryAt); err != nil {
+		t.Fatalf("MarkFailed() error = %v", err)
+	}
+
+	var processedStatus string
+	var processedAt sql.NullTime
+	if err := db.QueryRowContext(ctx, `SELECT status, processed_at FROM notification_outbox WHERE id = $1`, entries[0].ID).Scan(&processedStatus, &processedAt); err != nil {
+		t.Fatalf("select processed event: %v", err)
+	}
+	if processedStatus != "sent" || !processedAt.Valid {
+		t.Fatalf("processed event status = %q processed_at = %v", processedStatus, processedAt.Valid)
+	}
+
+	var failedStatus, lastError string
+	var attempts int
+	var nextAttemptAt time.Time
+	if err := db.QueryRowContext(ctx, `SELECT status, attempts, next_attempt_at, last_error FROM notification_outbox WHERE id = $1`, entries[1].ID).Scan(&failedStatus, &attempts, &nextAttemptAt, &lastError); err != nil {
+		t.Fatalf("select failed event: %v", err)
+	}
+	if failedStatus != "failed" || attempts != 1 || lastError != "delivery failed" || !nextAttemptAt.Equal(retryAt) {
+		t.Fatalf("failed event = status %q attempts %d retry %v error %q", failedStatus, attempts, nextAttemptAt, lastError)
+	}
+}
+
+func tableCount(t *testing.T, ctx context.Context, db *sql.DB, table string) int {
+	t.Helper()
+	allowed := map[string]bool{"tasks": true, "notification_outbox": true}
+	if !allowed[table] {
+		t.Fatalf("unsupported table %q", table)
+	}
+	var count int
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+table).Scan(&count); err != nil {
+		t.Fatalf("count %s: %v", table, err)
+	}
+	return count
 }
 
 func assertTeamStatsReport(t *testing.T, ctx context.Context, db *sql.DB, teamID int64) {

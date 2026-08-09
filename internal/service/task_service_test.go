@@ -7,6 +7,7 @@ import (
 	"errors"
 	"testing"
 
+	"task-manager/internal/events"
 	"task-manager/internal/models"
 )
 
@@ -24,12 +25,16 @@ type fakeTaskRepository struct {
 
 	createdTask *models.Task
 	updatedTask *models.Task
+	events      []events.Event
 }
 
-func (r *fakeTaskRepository) Create(ctx context.Context, task models.Task) (int64, error) {
+func (r *fakeTaskRepository) Create(ctx context.Context, task models.Task, eventFactory func(int64) events.Event) (int64, error) {
 	r.createdTask = &task
 	if r.createErr != nil {
 		return 0, r.createErr
+	}
+	if eventFactory != nil {
+		r.events = append(r.events, eventFactory(r.createID))
 	}
 	return r.createID, nil
 }
@@ -48,8 +53,9 @@ func (r *fakeTaskRepository) GetByID(ctx context.Context, id int64) (*models.Tas
 	return r.task, nil
 }
 
-func (r *fakeTaskRepository) Update(ctx context.Context, userID int64, task models.Task) error {
+func (r *fakeTaskRepository) Update(ctx context.Context, userID int64, task models.Task, domainEvents []events.Event) error {
 	r.updatedTask = &task
+	r.events = append(r.events, domainEvents...)
 	return r.updateErr
 }
 
@@ -124,8 +130,45 @@ func TestTaskServiceCreate(t *testing.T) {
 	if taskRepo.createdTask == nil || taskRepo.createdTask.CreatedBy != 1 {
 		t.Fatalf("created task = %+v, want CreatedBy 1", taskRepo.createdTask)
 	}
+	if len(taskRepo.events) != 1 || taskRepo.events[0].EventType != events.TaskCreated {
+		t.Fatalf("events = %+v, want task.created", taskRepo.events)
+	}
+	payload, ok := taskRepo.events[0].Payload.(events.TaskPayload)
+	if !ok || payload.TaskID != 10 || payload.TeamID != 5 {
+		t.Fatalf("event payload = %+v, want task 10 team 5", taskRepo.events[0].Payload)
+	}
 	if !taskCache.invalidateCalled {
 		t.Fatal("cache invalidation was not called")
+	}
+}
+
+func TestTaskServiceUpdateAssignmentEvent(t *testing.T) {
+	taskRepo := &fakeTaskRepository{task: &models.Task{ID: 10, Status: "todo", TeamID: 5, CreatedBy: 1}}
+	service := NewTaskService(taskRepo, NewTaskPolicy(fakeTeamAccess{
+		roles:   map[int64]string{1: "owner"},
+		members: map[int64]bool{2: true},
+	}), nil)
+	assigneeID := int64(2)
+
+	err := service.Update(context.Background(), 1, 10, TaskUpdate{AssigneeIDSet: true, AssigneeID: &assigneeID})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if len(taskRepo.events) != 1 || taskRepo.events[0].EventType != events.TaskAssigned {
+		t.Fatalf("events = %+v, want task.assigned", taskRepo.events)
+	}
+}
+
+func TestTaskServiceUpdateNoChangesDoesNotWrite(t *testing.T) {
+	taskRepo := &fakeTaskRepository{task: &models.Task{ID: 10, Title: "Same", Status: "todo", TeamID: 5, CreatedBy: 1}}
+	service := NewTaskService(taskRepo, NewTaskPolicy(fakeTeamAccess{roles: map[int64]string{1: "owner"}}), nil)
+	title := "Same"
+
+	if err := service.Update(context.Background(), 1, 10, TaskUpdate{Title: &title}); err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if taskRepo.updatedTask != nil || len(taskRepo.events) != 0 {
+		t.Fatalf("update = %+v events = %+v, want no write", taskRepo.updatedTask, taskRepo.events)
 	}
 }
 
@@ -234,6 +277,9 @@ func TestTaskServiceUpdate(t *testing.T) {
 	}
 	if !taskCache.invalidateCalled {
 		t.Fatal("cache invalidation was not called")
+	}
+	if len(taskRepo.events) != 2 || taskRepo.events[0].EventType != events.TaskUpdated || taskRepo.events[1].EventType != events.TaskStatusChanged {
+		t.Fatalf("events = %+v, want task.updated and task.status_changed", taskRepo.events)
 	}
 }
 

@@ -3,23 +3,31 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strconv"
 
+	"task-manager/internal/events"
 	"task-manager/internal/models"
 )
 
 type TaskRepository struct {
-	db *sql.DB
+	db     *sql.DB
+	outbox *OutboxRepository
 }
 
 func NewTaskRepository(db *sql.DB) *TaskRepository {
-	return &TaskRepository{db: db}
+	return &TaskRepository{db: db, outbox: NewOutboxRepository(db)}
 }
 
-func (r *TaskRepository) Create(ctx context.Context, task models.Task) (int64, error) {
-	var taskID int64
-	err := r.db.QueryRowContext(ctx, `
+func (r *TaskRepository) Create(ctx context.Context, task models.Task, eventFactory func(int64) events.Event) (taskID int64, err error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin create task tx: %w", err)
+	}
+	defer rollbackUnlessCommitted(tx, &err)
+
+	err = tx.QueryRowContext(ctx, `
 			INSERT INTO tasks(title, description, status, assignee_id, completed_at, team_id, created_by)
 			VALUES ($1, $2, $3, $4, CASE WHEN $5 = 'done' THEN CURRENT_TIMESTAMP ELSE NULL END, $6, $7)
 			RETURNING id
@@ -35,6 +43,17 @@ func (r *TaskRepository) Create(ctx context.Context, task models.Task) (int64, e
 	if err != nil {
 		return 0, fmt.Errorf("create task: %w", err)
 	}
+
+	if eventFactory != nil {
+		if err := r.outbox.Create(ctx, tx, eventFactory(taskID)); err != nil {
+			return 0, err
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit create task tx: %w", err)
+	}
+	tx = nil
 
 	return taskID, nil
 }
@@ -156,19 +175,12 @@ func scanTask(scanner taskScanner) (*models.Task, error) {
 	return &t, nil
 }
 
-func (r *TaskRepository) Update(ctx context.Context, userID int64, task models.Task) (err error) {
+func (r *TaskRepository) Update(ctx context.Context, userID int64, task models.Task, domainEvents []events.Event) (err error) {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin update task tx: %w", err)
 	}
-	committed := false
-	defer func() {
-		if !committed {
-			if rollbackErr := tx.Rollback(); rollbackErr != nil && err == nil {
-				err = fmt.Errorf("rollback update task tx: %w", rollbackErr)
-			}
-		}
-	}()
+	defer rollbackUnlessCommitted(tx, &err)
 
 	oldTask, err := r.getByIDWithQuerier(ctx, tx, task.ID)
 	if err != nil {
@@ -226,12 +238,27 @@ func (r *TaskRepository) Update(ctx context.Context, userID int64, task models.T
 		}
 	}
 
+	for _, event := range domainEvents {
+		if err := r.outbox.Create(ctx, tx, event); err != nil {
+			return err
+		}
+	}
+
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit update task tx: %w", err)
 	}
-	committed = true
+	tx = nil
 
 	return nil
+}
+
+func rollbackUnlessCommitted(tx *sql.Tx, operationErr *error) {
+	if tx == nil {
+		return
+	}
+	if rollbackErr := tx.Rollback(); rollbackErr != nil && !errors.Is(rollbackErr, sql.ErrTxDone) && *operationErr == nil {
+		*operationErr = fmt.Errorf("rollback transaction: %w", rollbackErr)
+	}
 }
 
 func insertTaskHistory(ctx context.Context, tx *sql.Tx, taskID, userID int64, fieldName, oldValue, newValue string) error {

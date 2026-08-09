@@ -51,19 +51,13 @@ func main() {
 	middleware.RegisterMetrics()
 
 	authService := service.NewAuthService(cfg.JWTSecret)
-	inviteSender := service.NewCircuitBreakerInviteSender(
-		service.NewMockInviteSender(),
-		3,
-		30*time.Second,
-	)
-
 	userRepo := repository.NewUserRepository(postgresDB)
 	teamRepo := repository.NewTeamRepository(postgresDB)
 	taskRepo := repository.NewTaskRepository(postgresDB)
 	reportRepo := repository.NewReportRepository(postgresDB)
 	taskPolicy := service.NewTaskPolicy(teamRepo)
 	taskCache := cache.NewTaskCache(redisClient, 5*time.Minute)
-	teamService := service.NewTeamService(teamRepo, inviteSender)
+	teamService := service.NewTeamService(teamRepo)
 	taskService := service.NewTaskService(taskRepo, taskPolicy, taskCache)
 
 	authHandler := handlers.NewAuthHandler(userRepo, authService)

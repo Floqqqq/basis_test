@@ -6,11 +6,13 @@ import (
 	"fmt"
 
 	"task-manager/internal/domain"
+	"task-manager/internal/events"
 	"task-manager/internal/models"
 )
 
 type TeamRepository struct {
-	db *sql.DB
+	db     *sql.DB
+	outbox *OutboxRepository
 }
 
 var (
@@ -19,7 +21,7 @@ var (
 )
 
 func NewTeamRepository(db *sql.DB) *TeamRepository {
-	return &TeamRepository{db: db}
+	return &TeamRepository{db: db, outbox: NewOutboxRepository(db)}
 }
 
 func (r *TeamRepository) Create(ctx context.Context, name string, userID int64) (teamID int64, err error) {
@@ -152,9 +154,15 @@ func (r *TeamRepository) IsTeamMember(ctx context.Context, teamID, userID int64)
 	return exists, nil
 }
 
-func (r *TeamRepository) Invite(ctx context.Context, teamID, userID int64, role string) error {
+func (r *TeamRepository) Invite(ctx context.Context, teamID, userID int64, role string, event events.Event) (err error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin invite team member tx: %w", err)
+	}
+	defer rollbackUnlessCommitted(tx, &err)
+
 	var userExists bool
-	if err := r.db.QueryRowContext(ctx, `
+	if err := tx.QueryRowContext(ctx, `
 		SELECT EXISTS(
 			SELECT 1 FROM users WHERE id = $1
 		)
@@ -167,7 +175,7 @@ func (r *TeamRepository) Invite(ctx context.Context, teamID, userID int64, role 
 	}
 
 	var memberExists bool
-	if err := r.db.QueryRowContext(ctx, `
+	if err := tx.QueryRowContext(ctx, `
 		SELECT EXISTS(
 			SELECT 1 FROM team_members WHERE team_id = $1 AND user_id = $2
 		)
@@ -179,7 +187,7 @@ func (r *TeamRepository) Invite(ctx context.Context, teamID, userID int64, role 
 		return ErrTeamMemberExists
 	}
 
-	_, err := r.db.ExecContext(ctx,
+	_, err = tx.ExecContext(ctx,
 		`INSERT INTO team_members(user_id, team_id, role) VALUES ($1, $2, $3)`,
 		userID,
 		teamID,
@@ -188,6 +196,13 @@ func (r *TeamRepository) Invite(ctx context.Context, teamID, userID int64, role 
 	if err != nil {
 		return fmt.Errorf("insert team member invite: %w", err)
 	}
+	if err := r.outbox.Create(ctx, tx, event); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit invite team member tx: %w", err)
+	}
+	tx = nil
 
 	return nil
 }

@@ -41,7 +41,7 @@ Web-приложение и REST API для управления задачам�
 * пагинация на уровне БД;
 * unit-тесты;
 * интеграционные тесты с PostgreSQL через testcontainers;
-* circuit breaker для mock email/invite service;
+* domain events и transactional outbox;
 * rate limiting;
 * graceful shutdown;
 * Prometheus-метрики;
@@ -78,6 +78,7 @@ Web-приложение и REST API для управления задачам�
 │   ├── cache/
 │   ├── config/
 │   ├── db/
+│   ├── events/
 │   ├── handlers/
 │   ├── middleware/
 │   ├── models/
@@ -107,13 +108,14 @@ Web-приложение и REST API для управления задачам�
 | `cmd/api`             | Точка входа приложения, сборка зависимостей, настройка router, запуск HTTP-сервера и graceful shutdown |
 | `internal/config`     | Загрузка конфигурации из `config.yaml` и ENV                                                           |
 | `internal/db`         | Подключение к PostgreSQL, retry, connection pooling                                                    |
+| `internal/events`     | Типы domain events, metadata и payload                                                                 |
 | `internal/redis`      | Подключение к Redis с retry                                                                            |
 | `internal/cache`      | Redis-кеширование списка задач                                                                         |
 | `internal/handlers`   | HTTP handlers, валидация request body/query params, JSON-ответы                                        |
 | `internal/middleware` | JWT middleware, rate limiting, Prometheus middleware                                                   |
 | `internal/models`     | Основные модели данных                                                                                 |
-| `internal/repository` | Работа с PostgreSQL                                                                                    |
-| `internal/service`    | Бизнес-логика, JWT/bcrypt, права доступа, circuit breaker                                              |
+| `internal/repository` | Работа с PostgreSQL, транзакции и notification outbox                                                  |
+| `internal/service`    | Бизнес-логика, JWT/bcrypt, права доступа и формирование domain events                                  |
 | `internal/telemetry`  | OpenTelemetry SDK, OTLP exporter и HTTP instrumentation                                                |
 | `migrations`          | SQL-схема, связи и индексы                                                                             |
 | `frontend`            | React-приложение: страницы, API client, маршрутизация и стили                                          |
@@ -200,6 +202,7 @@ SQL-миграции из директории `migrations/` автоматич�
 migrations/001_init.sql
 migrations/002_indexes.sql
 migrations/003_task_comments_ordering_index.sql
+migrations/004_notification_outbox.sql
 ```
 
 Если база уже была создана раньше, PostgreSQL не применит init scripts повторно. Чтобы пересоздать БД с нуля:
@@ -284,6 +287,7 @@ migrations/001_init.sql
 ```text
 migrations/002_indexes.sql
 migrations/003_task_comments_ordering_index.sql
+migrations/004_notification_outbox.sql
 ```
 
 Основные таблицы:
@@ -1040,26 +1044,13 @@ Response body:
 
 Если Redis временно недоступен, rate limiter работает в fail-open режиме: API не блокирует запрос только из-за недоступности Redis.
 
-## Circuit breaker
+## Domain events и transactional outbox
 
-В проекте реализован circuit breaker для mock invite/email service.
+Бизнес-операции формируют события `task.created`, `task.updated`, `task.assigned`, `task.status_changed` и `team.member_added`.
 
-Он используется в сценарии приглашения пользователя в команду.
+Для создания и обновления задач, а также добавления участника бизнес-изменение и событие записываются в одной PostgreSQL-транзакции. События хранятся в таблице `notification_outbox` и не теряются после завершения HTTP-запроса.
 
-Настройки в `cmd/api/main.go`:
-
-```text
-failure threshold: 3
-open timeout: 30 секунд
-```
-
-Назначение circuit breaker:
-
-* не вызывать внешний сервис бесконечно, если он начал падать;
-* временно открывать circuit после серии ошибок;
-* через заданный timeout снова пробовать выполнять запросы.
-
-В текущей реализации используется mock invite sender, поэтому реальный email не отправляется.
+`OutboxRepository` поддерживает конкурентную выборку событий через `FOR UPDATE SKIP LOCKED`, статусы обработки и metadata для повторной попытки. Worker, Kafka и отправка email на этом этапе отсутствуют.
 
 ## Graceful shutdown
 
@@ -1458,13 +1449,13 @@ curl -s http://localhost:18080/api/v1/teams \
 | Оконная функция            | Выполнено              | `GET /api/v1/reports/top-users`                                                 |
 | Проверка связанных таблиц  | Выполнено              | `GET /api/v1/reports/invalid-assignees`                                         |
 | Redis cache TTL 5 минут    | Выполнено              | Кеш списка задач                                                                |
-| Индексы PostgreSQL         | Выполнено              | Миграции `002_indexes.sql` и `003_task_comments_ordering_index.sql`              |
+| Индексы PostgreSQL         | Выполнено              | Миграции `002_indexes.sql`, `003_task_comments_ordering_index.sql` и `004_notification_outbox.sql` |
 | Connection pooling         | Выполнено              | Настроено в `internal/db/postgres.go`                                           |
 | Пагинация на уровне БД     | Выполнено              | `LIMIT/OFFSET`                                                                  |
 | Unit-тесты                 | Выполнено              | Есть тесты сервисов, handlers, middleware, repository                           |
 | Integration-тесты с PostgreSQL | Выполнено          | Используется `testcontainers`                                                   |
 | 85% покрытия               | Не выполнено полностью | Текущее покрытие около `50.1%`; требуется добавить тесты                        |
-| Circuit breaker            | Выполнено              | Для mock invite/email service                                                   |
+| Transactional outbox       | Выполнено              | Бизнес-изменения и события сохраняются атомарно                                 |
 | Rate limiting              | Выполнено              | 100 запросов/мин; IP для register/login, user_id для защищённых endpoint        |
 | Graceful shutdown          | Выполнено              | `SIGINT/SIGTERM`, timeout 10 секунд                                             |
 | Prometheus metrics         | Выполнено              | Endpoint `/metrics`                                                             |

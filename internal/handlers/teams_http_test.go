@@ -182,7 +182,7 @@ func newTeamHandlerForTest(t *testing.T) (*TeamHandler, sqlmock.Sqlmock, *sql.DB
 		}
 	})
 
-	teamService := service.NewTeamService(repository.NewTeamRepository(db), service.NewMockInviteSender())
+	teamService := service.NewTeamService(repository.NewTeamRepository(db))
 	return NewTeamHandler(teamService), mock, db
 }
 
