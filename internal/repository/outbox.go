@@ -33,6 +33,8 @@ type OutboxRepository struct {
 	db *sql.DB
 }
 
+const processingLease = 5 * time.Minute
+
 func NewOutboxRepository(db *sql.DB) *OutboxRepository {
 	return &OutboxRepository{db: db}
 }
@@ -62,20 +64,20 @@ func (r *OutboxRepository) FetchPending(ctx context.Context, limit int) ([]Outbo
 		WITH candidates AS (
 			SELECT id
 			FROM notification_outbox
-			WHERE status IN ('pending', 'failed')
+			WHERE status IN ('pending', 'processing')
 			  AND next_attempt_at <= CURRENT_TIMESTAMP
 			ORDER BY next_attempt_at, created_at, id
 			FOR UPDATE SKIP LOCKED
 			LIMIT $1
 		)
 		UPDATE notification_outbox o
-		SET status = 'processing'
+		SET status = 'processing', next_attempt_at = CURRENT_TIMESTAMP + make_interval(secs => $2)
 		FROM candidates c
 		WHERE o.id = c.id
 		RETURNING o.id, o.event_id, o.event_type, o.payload, o.status,
 		          o.attempts, o.next_attempt_at, o.created_at,
 		          o.processed_at, o.last_error
-	`, limit)
+	`, limit, int(processingLease/time.Second))
 	if err != nil {
 		return nil, fmt.Errorf("fetch pending outbox events: %w", err)
 	}
@@ -137,6 +139,31 @@ func (r *OutboxRepository) MarkFailed(ctx context.Context, id int64, eventErr er
 		return fmt.Errorf("mark outbox event failed: %w", err)
 	}
 	return requireAffectedRow(result, "mark outbox event failed")
+}
+
+func (r *OutboxRepository) ScheduleRetry(ctx context.Context, id int64, eventErr error, retryAt time.Time) error {
+	result, err := r.db.ExecContext(ctx, `
+		UPDATE notification_outbox
+		SET status = 'pending', attempts = attempts + 1,
+			next_attempt_at = $2, last_error = $3
+		WHERE id = $1 AND status = 'processing'
+	`, id, retryAt, eventErr.Error())
+	if err != nil {
+		return fmt.Errorf("schedule outbox event retry: %w", err)
+	}
+	return requireAffectedRow(result, "schedule outbox event retry")
+}
+
+func (r *OutboxRepository) PendingCount(ctx context.Context) (int, error) {
+	var count int
+	if err := r.db.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM notification_outbox
+		WHERE status IN ('pending', 'processing')
+	`).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count pending outbox events: %w", err)
+	}
+	return count, nil
 }
 
 func requireAffectedRow(result sql.Result, operation string) error {

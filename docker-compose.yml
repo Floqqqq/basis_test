@@ -9,7 +9,10 @@ services:
         condition: service_started
 
   app:
-    build: .
+    build:
+      context: .
+      args:
+        TARGET: api
     ports:
       - "${APP_HOST_PORT:-18080}:8080"
     depends_on:
@@ -28,6 +31,33 @@ services:
       OTEL_SERVICE_NAME: "task-manager-api"
       OTEL_EXPORTER_OTLP_ENDPOINT: "otel-collector:4317"
       OTEL_EXPORTER_OTLP_INSECURE: "true"
+
+  worker:
+    build:
+      context: .
+      args:
+        TARGET: worker
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mailpit:
+        condition: service_started
+      otel-collector:
+        condition: service_started
+    environment:
+      POSTGRES_DSN: "postgres://postgres:postgres@postgres:5432/task_manager?sslmode=disable"
+      SMTP_HOST: "mailpit"
+      SMTP_PORT: "1025"
+      SMTP_USERNAME: ""
+      SMTP_PASSWORD: ""
+      SMTP_FROM: "no-reply@task-manager.local"
+      WORKER_METRICS_PORT: "9091"
+      OTEL_ENABLED: "true"
+      OTEL_SERVICE_NAME: "task-manager-worker"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "otel-collector:4317"
+      OTEL_EXPORTER_OTLP_INSECURE: "true"
+    ports:
+      - "${WORKER_METRICS_HOST_PORT:-19091}:9091"
 
   postgres:
     image: postgres:16-alpine
@@ -54,6 +84,12 @@ services:
       interval: 5s
       timeout: 3s
       retries: 20
+
+  mailpit:
+    image: axllent/mailpit:v1.30.7
+    ports:
+      - "${MAILPIT_SMTP_HOST_PORT:-1025}:1025"
+      - "${MAILPIT_UI_HOST_PORT:-8025}:8025"
 
   otel-collector:
     image: otel/opentelemetry-collector:0.157.0

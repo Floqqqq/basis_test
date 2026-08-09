@@ -3,6 +3,8 @@ package events
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
+	"fmt"
 	"time"
 )
 
@@ -23,6 +25,38 @@ type Metadata struct {
 	ActorID    int64     `json:"actor_id"`
 }
 
+type storedEvent struct {
+	Metadata
+	Payload json.RawMessage `json:"payload"`
+}
+
+func Decode(data []byte) (Event, error) {
+	var stored storedEvent
+	if err := json.Unmarshal(data, &stored); err != nil {
+		return Event{}, fmt.Errorf("decode event envelope: %w", err)
+	}
+
+	var payload any
+	switch stored.EventType {
+	case TaskCreated, TaskUpdated, TaskAssigned, TaskStatusChanged:
+		var taskPayload TaskPayload
+		if err := json.Unmarshal(stored.Payload, &taskPayload); err != nil {
+			return Event{}, fmt.Errorf("decode task event payload: %w", err)
+		}
+		payload = taskPayload
+	case TeamMemberAdded:
+		var memberPayload TeamMemberPayload
+		if err := json.Unmarshal(stored.Payload, &memberPayload); err != nil {
+			return Event{}, fmt.Errorf("decode team member event payload: %w", err)
+		}
+		payload = memberPayload
+	default:
+		return Event{}, fmt.Errorf("unsupported event type %q", stored.EventType)
+	}
+
+	return Event{Metadata: stored.Metadata, Payload: payload}, nil
+}
+
 type Event struct {
 	Metadata
 	Payload any `json:"payload"`
@@ -31,11 +65,13 @@ type Event struct {
 type TaskPayload struct {
 	TaskID             int64    `json:"task_id"`
 	TeamID             int64    `json:"team_id"`
+	CreatorID          int64    `json:"creator_id,omitempty"`
 	Status             string   `json:"status,omitempty"`
 	PreviousStatus     string   `json:"previous_status,omitempty"`
 	AssigneeID         *int64   `json:"assignee_id"`
 	PreviousAssigneeID *int64   `json:"previous_assignee_id"`
 	ChangedFields      []string `json:"changed_fields,omitempty"`
+	RecipientsCaptured bool     `json:"recipients_captured,omitempty"`
 }
 
 type TeamMemberPayload struct {

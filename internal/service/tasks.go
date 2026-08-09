@@ -138,10 +138,12 @@ func (s *TaskService) Create(ctx context.Context, userID int64, task models.Task
 	task.CreatedBy = userID
 	taskID, err = s.tasks.Create(ctx, task, func(taskID int64) events.Event {
 		return events.New(events.TaskCreated, userID, events.TaskPayload{
-			TaskID:     taskID,
-			TeamID:     task.TeamID,
-			Status:     task.Status,
-			AssigneeID: task.AssigneeID,
+			TaskID:             taskID,
+			TeamID:             task.TeamID,
+			CreatorID:          task.CreatedBy,
+			Status:             task.Status,
+			AssigneeID:         task.AssigneeID,
+			RecipientsCaptured: true,
 		})
 	})
 	if err != nil {
@@ -306,25 +308,33 @@ func taskUpdateEvents(actorID int64, oldTask, updatedTask *models.Task) []events
 	}
 	if len(changedFields) > 0 {
 		result = append(result, events.New(events.TaskUpdated, actorID, events.TaskPayload{
-			TaskID:        updatedTask.ID,
-			TeamID:        updatedTask.TeamID,
-			ChangedFields: changedFields,
+			TaskID:             updatedTask.ID,
+			TeamID:             updatedTask.TeamID,
+			CreatorID:          updatedTask.CreatedBy,
+			AssigneeID:         updatedTask.AssigneeID,
+			RecipientsCaptured: true,
+			ChangedFields:      changedFields,
 		}))
 	}
 	if !equalOptionalInt64(oldTask.AssigneeID, updatedTask.AssigneeID) {
 		result = append(result, events.New(events.TaskAssigned, actorID, events.TaskPayload{
 			TaskID:             updatedTask.ID,
 			TeamID:             updatedTask.TeamID,
+			CreatorID:          updatedTask.CreatedBy,
 			AssigneeID:         updatedTask.AssigneeID,
 			PreviousAssigneeID: oldTask.AssigneeID,
+			RecipientsCaptured: true,
 		}))
 	}
 	if oldTask.Status != updatedTask.Status {
 		result = append(result, events.New(events.TaskStatusChanged, actorID, events.TaskPayload{
-			TaskID:         updatedTask.ID,
-			TeamID:         updatedTask.TeamID,
-			Status:         updatedTask.Status,
-			PreviousStatus: oldTask.Status,
+			TaskID:             updatedTask.ID,
+			TeamID:             updatedTask.TeamID,
+			CreatorID:          updatedTask.CreatedBy,
+			AssigneeID:         updatedTask.AssigneeID,
+			RecipientsCaptured: true,
+			Status:             updatedTask.Status,
+			PreviousStatus:     oldTask.Status,
 		}))
 	}
 	return result

@@ -11,6 +11,12 @@ func TestLoadDefaults(t *testing.T) {
 	t.Setenv("OTEL_SERVICE_NAME", "")
 	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
 	t.Setenv("OTEL_EXPORTER_OTLP_INSECURE", "")
+	t.Setenv("SMTP_HOST", "")
+	t.Setenv("SMTP_PORT", "")
+	t.Setenv("SMTP_USERNAME", "")
+	t.Setenv("SMTP_PASSWORD", "")
+	t.Setenv("SMTP_FROM", "")
+	t.Setenv("WORKER_METRICS_PORT", "")
 
 	cfg := Load()
 
@@ -38,6 +44,12 @@ func TestLoadDefaults(t *testing.T) {
 	if !cfg.OTelExporterInsecure {
 		t.Fatal("OTelExporterInsecure = false, want true")
 	}
+	if cfg.SMTPHost != "localhost" || cfg.SMTPPort != 1025 || cfg.SMTPFrom != "no-reply@task-manager.local" {
+		t.Fatalf("SMTP defaults = %s:%d from %q", cfg.SMTPHost, cfg.SMTPPort, cfg.SMTPFrom)
+	}
+	if cfg.WorkerMetricsPort != "9091" {
+		t.Fatalf("WorkerMetricsPort = %q, want 9091", cfg.WorkerMetricsPort)
+	}
 }
 
 func TestLoadEnvironmentValues(t *testing.T) {
@@ -49,6 +61,12 @@ func TestLoadEnvironmentValues(t *testing.T) {
 	t.Setenv("OTEL_SERVICE_NAME", "test-api")
 	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "collector:4317")
 	t.Setenv("OTEL_EXPORTER_OTLP_INSECURE", "false")
+	t.Setenv("SMTP_HOST", "smtp.example.com")
+	t.Setenv("SMTP_PORT", "587")
+	t.Setenv("SMTP_USERNAME", "sender")
+	t.Setenv("SMTP_PASSWORD", "secret-password")
+	t.Setenv("SMTP_FROM", "sender@example.com")
+	t.Setenv("WORKER_METRICS_PORT", "9191")
 
 	cfg := Load()
 
@@ -75,6 +93,12 @@ func TestLoadEnvironmentValues(t *testing.T) {
 	}
 	if cfg.OTelExporterInsecure {
 		t.Fatal("OTelExporterInsecure = true, want false")
+	}
+	if cfg.SMTPHost != "smtp.example.com" || cfg.SMTPPort != 587 || cfg.SMTPUsername != "sender" || cfg.SMTPPassword != "secret-password" || cfg.SMTPFrom != "sender@example.com" {
+		t.Fatal("SMTP environment was not loaded correctly")
+	}
+	if cfg.WorkerMetricsPort != "9191" {
+		t.Fatalf("WorkerMetricsPort = %q, want 9191", cfg.WorkerMetricsPort)
 	}
 }
 

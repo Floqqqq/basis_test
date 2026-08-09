@@ -59,3 +59,9 @@ type TaskComment struct {
 	Text      string    `json:"text"`
 	CreatedAt time.Time `json:"created_at"`
 }
+
+type TaskNotificationData struct {
+	Title      string
+	CreatorID  int64
+	AssigneeID *int64
+}

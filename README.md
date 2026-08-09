@@ -2,7 +2,7 @@
 
 Web-приложение и REST API для управления задачами в командах.
 
-Проект состоит из Go backend и React frontend. Он поддерживает регистрацию пользователей, JWT-аутентификацию, командную работу, ролевую модель `owner/admin/member`, создание и обновление задач, комментарии, историю изменений задач, Redis-кеширование, rate limiting, Prometheus-метрики, OpenTelemetry tracing, SQL-отчёты на PostgreSQL, Docker Compose и тесты.
+Проект состоит из Go backend, React frontend и асинхронного notification worker. Он поддерживает регистрацию пользователей, JWT-аутентификацию, командную работу, ролевую модель `owner/admin/member`, создание и обновление задач, комментарии, историю изменений задач, email-уведомления, Redis-кеширование, rate limiting, Prometheus-метрики, OpenTelemetry tracing, SQL-отчёты на PostgreSQL, Docker Compose и тесты.
 
 ## Описание проекта
 
@@ -42,6 +42,7 @@ Web-приложение и REST API для управления задачам�
 * unit-тесты;
 * интеграционные тесты с PostgreSQL через testcontainers;
 * domain events и transactional outbox;
+* асинхронный worker и SMTP email-уведомления;
 * rate limiting;
 * graceful shutdown;
 * Prometheus-метрики;
@@ -62,6 +63,7 @@ Web-приложение и REST API для управления задачам�
 | Авторизация           | JWT, `github.com/golang-jwt/jwt/v5` |
 | Хеширование паролей   | bcrypt                              |
 | Метрики               | Prometheus                          |
+| Email                 | SMTP, Mailpit для локальной разработки |
 | Тесты repository-слоя | `sqlmock`, `testcontainers-go`      |
 | Redis-тесты           | `redismock`                         |
 | Контейнеризация       | Docker, Docker Compose              |
@@ -72,7 +74,9 @@ Web-приложение и REST API для управления задачам�
 ```text
 .
 ├── cmd/
-│   └── api/
+│   ├── api/
+│   │   └── main.go
+│   └── worker/
 │       └── main.go
 ├── internal/
 │   ├── cache/
@@ -82,6 +86,7 @@ Web-приложение и REST API для управления задачам�
 │   ├── handlers/
 │   ├── middleware/
 │   ├── models/
+│   ├── notifications/
 │   ├── redis/
 │   ├── repository/
 │   └── service/
@@ -106,6 +111,7 @@ Web-приложение и REST API для управления задачам�
 | Путь                  | Назначение                                                                                             |
 | --------------------- | ------------------------------------------------------------------------------------------------------ |
 | `cmd/api`             | Точка входа приложения, сборка зависимостей, настройка router, запуск HTTP-сервера и graceful shutdown |
+| `cmd/worker`          | Асинхронная обработка outbox, worker metrics и graceful shutdown                                      |
 | `internal/config`     | Загрузка конфигурации из `config.yaml` и ENV                                                           |
 | `internal/db`         | Подключение к PostgreSQL, retry, connection pooling                                                    |
 | `internal/events`     | Типы domain events, metadata и payload                                                                 |
@@ -114,6 +120,7 @@ Web-приложение и REST API для управления задачам�
 | `internal/handlers`   | HTTP handlers, валидация request body/query params, JSON-ответы                                        |
 | `internal/middleware` | JWT middleware, rate limiting, Prometheus middleware                                                   |
 | `internal/models`     | Основные модели данных                                                                                 |
+| `internal/notifications` | Recipient policy, email templates, SMTP sender, retry, worker и metrics                             |
 | `internal/repository` | Работа с PostgreSQL, транзакции и notification outbox                                                  |
 | `internal/service`    | Бизнес-логика, JWT/bcrypt, права доступа и формирование domain events                                  |
 | `internal/telemetry`  | OpenTelemetry SDK, OTLP exporter и HTTP instrumentation                                                |
@@ -164,6 +171,9 @@ Vite откроет интерфейс на `http://localhost:5173` и пере�
 | Redis  |          `6379` |    `6380` |
 | OTLP Collector | `4317` | `4317` |
 | Jaeger UI |       `16686` | `16686` |
+| Worker metrics |   `9091` | `19091` |
+| Mailpit SMTP |      `1025` | `1025` |
+| Mailpit UI |        `8025` | `8025` |
 
 Если нужно поменять host-порт API:
 
@@ -188,11 +198,13 @@ FRONTEND_HOST_PORT=3000 APP_HOST_PORT=18080 POSTGRES_HOST_PORT=5433 REDIS_HOST_P
 В `docker-compose.yml` поднимаются:
 
 * приложение Go;
+* notification worker;
 * React frontend с Nginx;
 * PostgreSQL 16;
 * Redis 7;
 * OpenTelemetry Collector 0.157.0;
 * Jaeger 1.76.0.
+* Mailpit 1.30.7.
 
 PostgreSQL и Redis имеют healthcheck. Приложение стартует после того, как PostgreSQL и Redis становятся healthy.
 
@@ -203,6 +215,7 @@ migrations/001_init.sql
 migrations/002_indexes.sql
 migrations/003_task_comments_ordering_index.sql
 migrations/004_notification_outbox.sql
+migrations/005_outbox_worker_index.sql
 ```
 
 Если база уже была создана раньше, PostgreSQL не применит init scripts повторно. Чтобы пересоздать БД с нуля:
@@ -233,6 +246,12 @@ otel_enabled: false
 otel_service_name: "task-manager-api"
 otel_exporter_otlp_endpoint: "localhost:4317"
 otel_exporter_otlp_insecure: true
+smtp_host: "localhost"
+smtp_port: 1025
+smtp_username: ""
+smtp_password: ""
+smtp_from: "no-reply@task-manager.local"
+worker_metrics_port: "9091"
 ```
 
 Путь к YAML-файлу можно переопределить:
@@ -260,6 +279,15 @@ ENV-переменные имеют приоритет над YAML.
 | `OTEL_EXPORTER_OTLP_INSECURE` | Отключить TLS для локального OTLP | `true` |
 | `OTEL_COLLECTOR_GRPC_PORT` | Host-порт локального Collector | `4317` |
 | `JAEGER_UI_PORT` | Host-порт Jaeger UI | `16686` |
+| `SMTP_HOST` | SMTP server host | `localhost` |
+| `SMTP_PORT` | SMTP server port | `1025` |
+| `SMTP_USERNAME` | SMTP username | пусто |
+| `SMTP_PASSWORD` | SMTP password, не выводится в логах | пусто |
+| `SMTP_FROM` | Адрес отправителя | `no-reply@task-manager.local` |
+| `WORKER_METRICS_PORT` | Порт metrics внутри worker | `9091` |
+| `WORKER_METRICS_HOST_PORT` | Host-порт worker metrics | `19091` |
+| `MAILPIT_SMTP_HOST_PORT` | Host-порт локального SMTP | `1025` |
+| `MAILPIT_UI_HOST_PORT` | Host-порт Mailpit UI | `8025` |
 
 В Docker Compose для приложения используются значения:
 
@@ -288,6 +316,7 @@ migrations/001_init.sql
 migrations/002_indexes.sql
 migrations/003_task_comments_ordering_index.sql
 migrations/004_notification_outbox.sql
+migrations/005_outbox_worker_index.sql
 ```
 
 Основные таблицы:
@@ -300,6 +329,7 @@ migrations/004_notification_outbox.sql
 | `tasks`         | Задачи команды                                                                  |
 | `task_history`  | История изменений задач                                                         |
 | `task_comments` | Комментарии к задачам                                                           |
+| `notification_outbox` | События для асинхронной обработки уведомлений                              |
 
 Связи:
 
@@ -1050,7 +1080,15 @@ Response body:
 
 Для создания и обновления задач, а также добавления участника бизнес-изменение и событие записываются в одной PostgreSQL-транзакции. События хранятся в таблице `notification_outbox` и не теряются после завершения HTTP-запроса.
 
-`OutboxRepository` поддерживает конкурентную выборку событий через `FOR UPDATE SKIP LOCKED`, статусы обработки и metadata для повторной попытки. Worker, Kafka и отправка email на этом этапе отсутствуют.
+`OutboxRepository` поддерживает конкурентную выборку событий через `FOR UPDATE SKIP LOCKED`, lease для зависших `processing` событий, статусы обработки и metadata для повторной попытки.
+
+Отдельный процесс `cmd/worker` получает события batch-ами и передаёт их в `NotificationService`. Получатели, исключение actor и удаление дубликатов определяются централизованно. SMTP скрыт за интерфейсом `EmailSender`; API request не ждёт отправку письма.
+
+Временные ошибки используют exponential backoff: 5 секунд, 30 секунд, 2 минуты, 10 минут и 30 минут. После пяти неудачных попыток событие получает терминальный статус `failed`.
+
+`event_id` передаётся как `Message-ID` и `X-Event-ID`. Worker не забирает уже обработанные события намеренно, но SMTP не поддерживает exactly-once: при разрыве соединения после приёма письма возможна повторная доставка. Circuit breaker не добавлен, поскольку batch polling и backoff уже ограничивают обращения к недоступному provider; retry отвечает за повтор конкретного события.
+
+Метрики worker доступны на `http://localhost:19091/metrics`, письма локального SMTP видны в Mailpit UI на `http://localhost:8025`.
 
 ## Graceful shutdown
 
@@ -1436,7 +1474,7 @@ curl -s http://localhost:18080/api/v1/teams \
 | PostgreSQL                 | Выполнено              | Используется PostgreSQL 16                                                      |
 | Redis                      | Выполнено              | Используется для кеша и rate limiting                                           |
 | Docker                     | Выполнено              | Есть Dockerfile                                                                 |
-| Docker Compose             | Выполнено              | Поднимает app, PostgreSQL, Redis                                                |
+| Docker Compose             | Выполнено              | Поднимает app, worker, frontend, PostgreSQL, Redis, tracing и Mailpit           |
 | Git                        | Выполнено              | Проект готов для хранения в Git                                                 |
 | Регистрация                | Выполнено              | `POST /api/v1/register`                                                         |
 | Аутентификация             | Выполнено              | `POST /api/v1/login`, JWT                                                       |
@@ -1449,16 +1487,17 @@ curl -s http://localhost:18080/api/v1/teams \
 | Оконная функция            | Выполнено              | `GET /api/v1/reports/top-users`                                                 |
 | Проверка связанных таблиц  | Выполнено              | `GET /api/v1/reports/invalid-assignees`                                         |
 | Redis cache TTL 5 минут    | Выполнено              | Кеш списка задач                                                                |
-| Индексы PostgreSQL         | Выполнено              | Миграции `002_indexes.sql`, `003_task_comments_ordering_index.sql` и `004_notification_outbox.sql` |
+| Индексы PostgreSQL         | Выполнено              | Миграции `002_indexes.sql`-`005_outbox_worker_index.sql`                        |
 | Connection pooling         | Выполнено              | Настроено в `internal/db/postgres.go`                                           |
 | Пагинация на уровне БД     | Выполнено              | `LIMIT/OFFSET`                                                                  |
 | Unit-тесты                 | Выполнено              | Есть тесты сервисов, handlers, middleware, repository                           |
 | Integration-тесты с PostgreSQL | Выполнено          | Используется `testcontainers`                                                   |
 | 85% покрытия               | Не выполнено полностью | Текущее покрытие около `50.1%`; требуется добавить тесты                        |
 | Transactional outbox       | Выполнено              | Бизнес-изменения и события сохраняются атомарно                                 |
+| Email worker               | Выполнено              | Асинхронная SMTP-доставка, retry, max attempts и graceful shutdown              |
 | Rate limiting              | Выполнено              | 100 запросов/мин; IP для register/login, user_id для защищённых endpoint        |
 | Graceful shutdown          | Выполнено              | `SIGINT/SIGTERM`, timeout 10 секунд                                             |
-| Prometheus metrics         | Выполнено              | Endpoint `/metrics`                                                             |
+| Prometheus metrics         | Выполнено              | API `/metrics` и worker `:19091/metrics`                                        |
 | Config YAML/ENV            | Выполнено              | `config.yaml` + ENV override                                                    |
 
 ## Финальный результат
