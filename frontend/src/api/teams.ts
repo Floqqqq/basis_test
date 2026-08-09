@@ -1,4 +1,4 @@
-import type { Team, TeamMember, TeamRole } from "../types/api";
+import type { Team, TeamLeaveRequest, TeamMember, TeamRole } from "../types/api";
 import { apiRequest } from "./client";
 
 export const teamsApi = {
@@ -21,6 +21,29 @@ export const teamsApi = {
     return apiRequest<void>(`/teams/${teamId}/invite`, {
       method: "POST",
       body: JSON.stringify({ user_id: userId, role }),
+    });
+  },
+
+  removeMember(teamId: number, userId: number): Promise<void> {
+    return apiRequest<void>(`/teams/${teamId}/members/${userId}`, { method: "DELETE" });
+  },
+
+  requestLeave(teamId: number): Promise<TeamLeaveRequest> {
+    return apiRequest<TeamLeaveRequest>(`/teams/${teamId}/leave-requests`, { method: "POST" });
+  },
+
+  ownLeaveRequest(teamId: number): Promise<TeamLeaveRequest | null> {
+    return apiRequest<TeamLeaveRequest | null>(`/teams/${teamId}/leave-request`);
+  },
+
+  leaveRequests(teamId: number): Promise<TeamLeaveRequest[]> {
+    return apiRequest<TeamLeaveRequest[]>(`/teams/${teamId}/leave-requests`);
+  },
+
+  resolveLeaveRequest(teamId: number, requestId: number, decision: "approve" | "reject"): Promise<void> {
+    return apiRequest<void>(`/teams/${teamId}/leave-requests/${requestId}/decision`, {
+      method: "POST",
+      body: JSON.stringify({ decision }),
     });
   },
 };

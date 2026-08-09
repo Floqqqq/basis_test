@@ -27,6 +27,16 @@ export interface TeamMember {
   joined_at: string;
 }
 
+export interface TeamLeaveRequest {
+  id: number;
+  team_id: number;
+  user_id: number;
+  email: string;
+  role: TeamRole;
+  status: "pending";
+  requested_at: string;
+}
+
 export interface Task {
   id: number;
   title: string;

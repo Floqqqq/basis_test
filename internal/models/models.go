@@ -28,6 +28,18 @@ type TeamMember struct {
 	JoinedAt time.Time `json:"joined_at"`
 }
 
+type TeamLeaveRequest struct {
+	ID          int64      `json:"id"`
+	TeamID      int64      `json:"team_id"`
+	UserID      int64      `json:"user_id"`
+	Email       string     `json:"email"`
+	Role        string     `json:"role"`
+	Status      string     `json:"status"`
+	RequestedAt time.Time  `json:"requested_at"`
+	ResolvedAt  *time.Time `json:"resolved_at,omitempty"`
+	ResolvedBy  *int64     `json:"resolved_by,omitempty"`
+}
+
 type Task struct {
 	ID          int64      `json:"id"`
 	Title       string     `json:"title"`

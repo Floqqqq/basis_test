@@ -130,3 +130,106 @@ func validInviteRole(role string) bool {
 		return false
 	}
 }
+
+func (h *TeamHandler) RemoveMember(w http.ResponseWriter, r *http.Request) {
+	teamID, err := parseIDParam(r, "id")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid team id")
+		return
+	}
+	memberID, err := parseIDParam(r, "user_id")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid user id")
+		return
+	}
+
+	if err := h.teams.RemoveMember(r.Context(), middleware.GetUserID(r), teamID, memberID); err != nil {
+		writeServiceError(w, err, "cannot remove team member")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *TeamHandler) RequestLeave(w http.ResponseWriter, r *http.Request) {
+	teamID, err := parseIDParam(r, "id")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid team id")
+		return
+	}
+
+	request, err := h.teams.RequestLeave(r.Context(), middleware.GetUserID(r), teamID)
+	if err != nil {
+		writeServiceError(w, err, "cannot request team leave")
+		return
+	}
+	writeJSON(w, http.StatusCreated, request)
+}
+
+func (h *TeamHandler) LeaveRequests(w http.ResponseWriter, r *http.Request) {
+	teamID, err := parseIDParam(r, "id")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid team id")
+		return
+	}
+
+	requests, err := h.teams.ListLeaveRequests(r.Context(), middleware.GetUserID(r), teamID)
+	if err != nil {
+		writeServiceError(w, err, "cannot get team leave requests")
+		return
+	}
+	writeJSON(w, http.StatusOK, requests)
+}
+
+func (h *TeamHandler) OwnLeaveRequest(w http.ResponseWriter, r *http.Request) {
+	teamID, err := parseIDParam(r, "id")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid team id")
+		return
+	}
+
+	request, err := h.teams.GetOwnLeaveRequest(r.Context(), middleware.GetUserID(r), teamID)
+	if err != nil {
+		writeServiceError(w, err, "cannot get team leave request")
+		return
+	}
+	writeJSON(w, http.StatusOK, request)
+}
+
+type leaveDecisionRequest struct {
+	Decision string `json:"decision"`
+}
+
+func (h *TeamHandler) ResolveLeaveRequest(w http.ResponseWriter, r *http.Request) {
+	teamID, err := parseIDParam(r, "id")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid team id")
+		return
+	}
+	requestID, err := parseIDParam(r, "request_id")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request id")
+		return
+	}
+
+	var req leaveDecisionRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	if req.Decision != "approve" && req.Decision != "reject" {
+		writeError(w, http.StatusBadRequest, "invalid decision")
+		return
+	}
+
+	if err := h.teams.ResolveLeaveRequest(
+		r.Context(),
+		middleware.GetUserID(r),
+		teamID,
+		requestID,
+		req.Decision == "approve",
+	); err != nil {
+		writeServiceError(w, err, "cannot resolve team leave request")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}

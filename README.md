@@ -216,6 +216,7 @@ migrations/002_indexes.sql
 migrations/003_task_comments_ordering_index.sql
 migrations/004_notification_outbox.sql
 migrations/005_outbox_worker_index.sql
+migrations/006_team_leave_requests.sql
 ```
 
 Если база уже была создана раньше, PostgreSQL не применит init scripts повторно. Чтобы пересоздать БД с нуля:
@@ -317,6 +318,7 @@ migrations/002_indexes.sql
 migrations/003_task_comments_ordering_index.sql
 migrations/004_notification_outbox.sql
 migrations/005_outbox_worker_index.sql
+migrations/006_team_leave_requests.sql
 ```
 
 Основные таблицы:
@@ -330,6 +332,7 @@ migrations/005_outbox_worker_index.sql
 | `task_history`  | История изменений задач                                                         |
 | `task_comments` | Комментарии к задачам                                                           |
 | `notification_outbox` | События для асинхронной обработки уведомлений                              |
+| `team_leave_requests` | Заявки участников на выход из команды                                      |
 
 Связи:
 
@@ -632,6 +635,42 @@ curl -s -X POST http://localhost:18080/api/v1/teams/1/invite \
 Если пользователя не существует, API возвращает `404`.
 
 Если пользователь уже состоит в команде, API возвращает `409`.
+
+## Управление составом команды
+
+Владелец может удалить администратора или обычного участника. Администратор может удалить только обычного участника. Владельца удалить нельзя.
+
+```text
+DELETE /api/v1/teams/{id}/members/{user_id}
+```
+
+Обычный участник или администратор отправляет заявку на выход:
+
+```text
+POST /api/v1/teams/{id}/leave-requests
+```
+
+Владелец и администраторы получают общий список активных заявок:
+
+```text
+GET /api/v1/teams/{id}/leave-requests
+```
+
+Решение по заявке:
+
+```text
+POST /api/v1/teams/{id}/leave-requests/{request_id}/decision
+```
+
+Request body:
+
+```json
+{
+  "decision": "approve"
+}
+```
+
+Допустимые решения: `approve` и `reject`. Заявка блокируется на время обработки через PostgreSQL `FOR UPDATE`; после первого решения она исчезает из активного списка, а повторная попытка возвращает `409`.
 
 ## Создание задачи
 

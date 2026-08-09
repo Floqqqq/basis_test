@@ -3,7 +3,10 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"task-manager/internal/domain"
 	"task-manager/internal/events"
@@ -16,8 +19,11 @@ type TeamRepository struct {
 }
 
 var (
-	ErrUserNotFound     = domain.ErrUserNotFound
-	ErrTeamMemberExists = domain.ErrTeamMemberExists
+	ErrUserNotFound        = domain.ErrUserNotFound
+	ErrTeamMemberExists    = domain.ErrTeamMemberExists
+	ErrLeaveRequestExists  = domain.ErrLeaveRequestExists
+	ErrLeaveRequestHandled = domain.ErrLeaveRequestHandled
+	ErrCannotResolveOwn    = domain.ErrCannotResolveOwn
 )
 
 func NewTeamRepository(db *sql.DB) *TeamRepository {
@@ -204,5 +210,210 @@ func (r *TeamRepository) Invite(ctx context.Context, teamID, userID int64, role 
 	}
 	tx = nil
 
+	return nil
+}
+
+func (r *TeamRepository) RemoveMember(ctx context.Context, teamID, userID, actorID int64) (err error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin remove team member tx: %w", err)
+	}
+	defer rollbackUnlessCommitted(tx, &err)
+
+	if err := removeTeamMember(ctx, tx, teamID, userID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE team_leave_requests
+		SET status = 'approved', resolved_at = CURRENT_TIMESTAMP, resolved_by = $3
+		WHERE team_id = $1 AND user_id = $2 AND status = 'pending'
+	`, teamID, userID, actorID); err != nil {
+		return fmt.Errorf("resolve member leave request: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit remove team member tx: %w", err)
+	}
+	tx = nil
+	return nil
+}
+
+func (r *TeamRepository) CreateLeaveRequest(ctx context.Context, teamID, userID int64) (models.TeamLeaveRequest, error) {
+	var request models.TeamLeaveRequest
+	err := r.db.QueryRowContext(ctx, `
+		INSERT INTO team_leave_requests(team_id, user_id)
+		SELECT $1, $2
+		FROM team_members
+		WHERE team_id = $1 AND user_id = $2
+		RETURNING id, team_id, user_id, status, requested_at
+	`, teamID, userID).Scan(
+		&request.ID,
+		&request.TeamID,
+		&request.UserID,
+		&request.Status,
+		&request.RequestedAt,
+	)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return models.TeamLeaveRequest{}, sql.ErrNoRows
+		}
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return models.TeamLeaveRequest{}, ErrLeaveRequestExists
+		}
+		return models.TeamLeaveRequest{}, fmt.Errorf("insert team leave request: %w", err)
+	}
+	return request, nil
+}
+
+func (r *TeamRepository) ListLeaveRequests(ctx context.Context, teamID, excludeUserID int64) ([]models.TeamLeaveRequest, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT lr.id, lr.team_id, lr.user_id, u.email, tm.role, lr.status,
+		       lr.requested_at, lr.resolved_at, lr.resolved_by
+		FROM team_leave_requests lr
+		JOIN users u ON u.id = lr.user_id
+		JOIN team_members tm ON tm.team_id = lr.team_id AND tm.user_id = lr.user_id
+		WHERE lr.team_id = $1 AND lr.status = 'pending' AND lr.user_id <> $2
+		ORDER BY lr.requested_at, lr.id
+	`, teamID, excludeUserID)
+	if err != nil {
+		return nil, fmt.Errorf("list team leave requests: %w", err)
+	}
+	defer rows.Close()
+
+	requests := make([]models.TeamLeaveRequest, 0)
+	for rows.Next() {
+		var request models.TeamLeaveRequest
+		if err := rows.Scan(
+			&request.ID,
+			&request.TeamID,
+			&request.UserID,
+			&request.Email,
+			&request.Role,
+			&request.Status,
+			&request.RequestedAt,
+			&request.ResolvedAt,
+			&request.ResolvedBy,
+		); err != nil {
+			return nil, fmt.Errorf("scan team leave request: %w", err)
+		}
+		requests = append(requests, request)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate team leave requests: %w", err)
+	}
+	return requests, nil
+}
+
+func (r *TeamRepository) GetPendingLeaveRequest(ctx context.Context, teamID, userID int64) (*models.TeamLeaveRequest, error) {
+	var request models.TeamLeaveRequest
+	err := r.db.QueryRowContext(ctx, `
+		SELECT lr.id, lr.team_id, lr.user_id, u.email, tm.role, lr.status,
+		       lr.requested_at, lr.resolved_at, lr.resolved_by
+		FROM team_leave_requests lr
+		JOIN users u ON u.id = lr.user_id
+		JOIN team_members tm ON tm.team_id = lr.team_id AND tm.user_id = lr.user_id
+		WHERE lr.team_id = $1 AND lr.user_id = $2 AND lr.status = 'pending'
+	`, teamID, userID).Scan(
+		&request.ID,
+		&request.TeamID,
+		&request.UserID,
+		&request.Email,
+		&request.Role,
+		&request.Status,
+		&request.RequestedAt,
+		&request.ResolvedAt,
+		&request.ResolvedBy,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get pending team leave request: %w", err)
+	}
+	return &request, nil
+}
+
+func (r *TeamRepository) ResolveLeaveRequest(ctx context.Context, teamID, requestID, resolverID int64, approved bool) (err error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin resolve leave request tx: %w", err)
+	}
+	defer rollbackUnlessCommitted(tx, &err)
+
+	var userID int64
+	var status string
+	err = tx.QueryRowContext(ctx, `
+		SELECT user_id, status
+		FROM team_leave_requests
+		WHERE id = $1 AND team_id = $2
+		FOR UPDATE
+	`, requestID, teamID).Scan(&userID, &status)
+	if errors.Is(err, sql.ErrNoRows) {
+		return sql.ErrNoRows
+	}
+	if err != nil {
+		return fmt.Errorf("lock team leave request: %w", err)
+	}
+	if status != "pending" {
+		return ErrLeaveRequestHandled
+	}
+	if userID == resolverID {
+		return ErrCannotResolveOwn
+	}
+
+	resolution := "rejected"
+	if approved {
+		if err := removeTeamMember(ctx, tx, teamID, userID); err != nil {
+			return err
+		}
+		resolution = "approved"
+	}
+
+	result, err := tx.ExecContext(ctx, `
+		UPDATE team_leave_requests
+		SET status = $1, resolved_at = CURRENT_TIMESTAMP, resolved_by = $2
+		WHERE id = $3 AND status = 'pending'
+	`, resolution, resolverID, requestID)
+	if err != nil {
+		return fmt.Errorf("update team leave request: %w", err)
+	}
+	if affected, err := result.RowsAffected(); err != nil {
+		return fmt.Errorf("get resolved leave request rows: %w", err)
+	} else if affected != 1 {
+		return ErrLeaveRequestHandled
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit resolve leave request tx: %w", err)
+	}
+	tx = nil
+	return nil
+}
+
+func removeTeamMember(ctx context.Context, tx *sql.Tx, teamID, userID int64) error {
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE tasks
+		SET assignee_id = NULL, updated_at = CURRENT_TIMESTAMP
+		WHERE team_id = $1 AND assignee_id = $2
+	`, teamID, userID); err != nil {
+		return fmt.Errorf("unassign removed team member: %w", err)
+	}
+
+	result, err := tx.ExecContext(ctx,
+		`DELETE FROM team_members WHERE team_id = $1 AND user_id = $2`,
+		teamID,
+		userID,
+	)
+	if err != nil {
+		return fmt.Errorf("delete team member: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("get deleted team member rows: %w", err)
+	}
+	if affected != 1 {
+		return sql.ErrNoRows
+	}
 	return nil
 }

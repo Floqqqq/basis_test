@@ -1,5 +1,5 @@
 import { useMemo, useState, type FormEvent } from "react";
-import { ArrowLeft, ChevronLeft, ChevronRight, Plus, UserPlus } from "lucide-react";
+import { ArrowLeft, Check, ChevronLeft, ChevronRight, LogOut, Plus, Trash2, UserPlus, X } from "lucide-react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient, type UseQueryResult } from "@tanstack/react-query";
 import { teamsApi } from "../api/teams";
@@ -8,7 +8,8 @@ import { AsyncState } from "../components/AsyncState";
 import { Modal } from "../components/Modal";
 import { StatusBadge } from "../components/StatusBadge";
 import { formatDate, roleLabel } from "../lib/format";
-import type { TaskFilters, TaskStatus, TeamMember, TeamRole } from "../types/api";
+import { useCurrentUser } from "../hooks/useCurrentUser";
+import type { TaskFilters, TaskStatus, TeamLeaveRequest, TeamMember, TeamRole } from "../types/api";
 import { teamsQueryKey } from "./TeamsPage";
 
 const PAGE_SIZE = 10;
@@ -25,9 +26,11 @@ export function TeamPage() {
   const [createOpen, setCreateOpen] = useState(false);
   const [inviteOpen, setInviteOpen] = useState(false);
   const queryClient = useQueryClient();
+	const currentUserQuery = useCurrentUser();
 
   const teamsQuery = useQuery({ queryKey: teamsQueryKey, queryFn: teamsApi.list });
   const team = teamsQuery.data?.find((item) => item.id === teamId);
+	const canManageMembers = team?.role === "owner" || team?.role === "admin";
   const membersQuery = useQuery({
     queryKey: ["team-members", teamId],
     queryFn: () => teamsApi.members(teamId),
@@ -46,6 +49,27 @@ export function TeamPage() {
     queryFn: () => tasksApi.list(teamId, filters),
     enabled: validTeamId && activeTab === "tasks",
   });
+	const leaveRequestsQuery = useQuery({
+		queryKey: ["team-leave-requests", teamId],
+		queryFn: () => teamsApi.leaveRequests(teamId),
+		enabled: validTeamId && canManageMembers,
+		refetchInterval: 3000,
+	});
+	const ownLeaveRequestQuery = useQuery({
+		queryKey: ["team-leave-request", teamId],
+		queryFn: () => teamsApi.ownLeaveRequest(teamId),
+		enabled: validTeamId && Boolean(team) && team?.role !== "owner",
+		refetchInterval: 3000,
+	});
+	const requestLeaveMutation = useMutation({
+		mutationFn: () => teamsApi.requestLeave(teamId),
+		onSuccess: async () => {
+			await Promise.all([
+				queryClient.invalidateQueries({ queryKey: ["team-leave-request", teamId] }),
+				queryClient.invalidateQueries({ queryKey: ["team-leave-requests", teamId] }),
+			]);
+		},
+	});
 
   if (!validTeamId) {
     return <AsyncState kind="error" title="Некорректная команда" message="Идентификатор команды указан неверно." />;
@@ -83,11 +107,25 @@ export function TeamPage() {
             <Plus size={17} /> Новая задача
           </button>
         )}
-        {activeTab === "members" && canInvite && (
-          <button className="button button--primary" type="button" onClick={() => setInviteOpen(true)}>
-            <UserPlus size={17} /> Добавить участника
-          </button>
-        )}
+		{activeTab === "members" && (
+			<div className="page-actions">
+				{team.role !== "owner" && (
+					<button
+						className="button button--secondary"
+						type="button"
+						onClick={() => requestLeaveMutation.mutate()}
+						disabled={requestLeaveMutation.isPending || ownLeaveRequestQuery.isLoading || Boolean(ownLeaveRequestQuery.data)}
+					>
+						<LogOut size={17} /> {ownLeaveRequestQuery.data ? "Запрос отправлен" : requestLeaveMutation.isPending ? "Отправка..." : "Выйти из команды"}
+					</button>
+				)}
+				{canInvite && (
+					<button className="button button--primary" type="button" onClick={() => setInviteOpen(true)}>
+						<UserPlus size={17} /> Добавить участника
+					</button>
+				)}
+			</div>
+		)}
       </header>
 
       <div className="tabs" role="tablist" aria-label="Разделы команды">
@@ -111,8 +149,16 @@ export function TeamPage() {
           onNext={() => setOffset((value) => value + PAGE_SIZE)}
         />
       ) : (
-        <MembersSection membersQuery={membersQuery} />
+		<MembersSection
+			teamId={teamId}
+			currentUserId={currentUserQuery.data?.id}
+			currentUserRole={team.role}
+			membersQuery={membersQuery}
+			leaveRequestsQuery={leaveRequestsQuery}
+		/>
       )}
+
+		{requestLeaveMutation.isError && <div className="form-error" role="alert">{requestLeaveMutation.error.message}</div>}
 
       <CreateTaskModal
         open={createOpen}
@@ -208,21 +254,86 @@ function TasksSection(props: TasksSectionProps) {
   );
 }
 
-function MembersSection({ membersQuery }: { membersQuery: UseQueryResult<TeamMember[], Error> }) {
+interface MembersSectionProps {
+	teamId: number;
+	currentUserId?: number;
+	currentUserRole: TeamRole;
+	membersQuery: UseQueryResult<TeamMember[], Error>;
+	leaveRequestsQuery: UseQueryResult<TeamLeaveRequest[], Error>;
+}
+
+function MembersSection({ teamId, currentUserId, currentUserRole, membersQuery, leaveRequestsQuery }: MembersSectionProps) {
+	const queryClient = useQueryClient();
+	const [removeCandidate, setRemoveCandidate] = useState<TeamMember | null>(null);
+	const removeMutation = useMutation({
+		mutationFn: (userId: number) => teamsApi.removeMember(teamId, userId),
+		onSuccess: async () => {
+			setRemoveCandidate(null);
+			await Promise.all([
+				queryClient.invalidateQueries({ queryKey: ["team-members", teamId] }),
+				queryClient.invalidateQueries({ queryKey: ["team-leave-requests", teamId] }),
+			]);
+		},
+	});
+	const decisionMutation = useMutation({
+		mutationFn: ({ requestId, decision }: { requestId: number; decision: "approve" | "reject" }) =>
+			teamsApi.resolveLeaveRequest(teamId, requestId, decision),
+		onSuccess: async () => {
+			await Promise.all([
+				queryClient.invalidateQueries({ queryKey: ["team-leave-requests", teamId] }),
+				queryClient.invalidateQueries({ queryKey: ["team-members", teamId] }),
+				queryClient.invalidateQueries({ queryKey: ["tasks", teamId] }),
+			]);
+		},
+	});
+	const canRemove = (member: TeamMember) =>
+		member.id !== currentUserId &&
+		member.role !== "owner" &&
+		(currentUserRole === "owner" || (currentUserRole === "admin" && member.role === "member"));
+
   if (membersQuery.isLoading) return <AsyncState kind="loading" title="Загрузка участников" />;
   if (membersQuery.isError) return <AsyncState kind="error" title="Не удалось загрузить участников" message={membersQuery.error.message} />;
   if (!membersQuery.data?.length) return <AsyncState kind="empty" title="Участников пока нет" />;
 
   return (
-    <div className="member-list">
+	<div className="section-stack">
+		{(currentUserRole === "owner" || currentUserRole === "admin") && (
+			<section className="leave-requests">
+				<div className="section-header">
+					<div><h2>Запросы на выход</h2><p>Ожидают решения владельца или администратора</p></div>
+					<span className="count-badge">{leaveRequestsQuery.data?.length ?? 0}</span>
+				</div>
+				{leaveRequestsQuery.isLoading && <AsyncState compact kind="loading" title="Загрузка запросов" />}
+				{leaveRequestsQuery.isError && <AsyncState compact kind="error" title="Не удалось загрузить запросы" message={leaveRequestsQuery.error.message} />}
+				{leaveRequestsQuery.data?.length === 0 && <p className="empty-inline">Нет ожидающих запросов</p>}
+				{leaveRequestsQuery.data?.map((request) => (
+					<div className="leave-request-row" key={request.id}>
+						<div><strong>{request.email}</strong><span>{roleLabel(request.role)} · {formatDate(request.requested_at)}</span></div>
+						<div className="row-actions">
+							<button className="icon-button" type="button" onClick={() => decisionMutation.mutate({ requestId: request.id, decision: "reject" })} disabled={decisionMutation.isPending} aria-label="Отклонить запрос" title="Отклонить"><X size={18} /></button>
+							<button className="icon-button icon-button--accent" type="button" onClick={() => decisionMutation.mutate({ requestId: request.id, decision: "approve" })} disabled={decisionMutation.isPending} aria-label="Одобрить запрос" title="Одобрить"><Check size={18} /></button>
+						</div>
+					</div>
+				))}
+				{decisionMutation.isError && <div className="form-error" role="alert">{decisionMutation.error.message}</div>}
+			</section>
+		)}
+
+		<div className="member-list">
       {membersQuery.data.map((member) => (
         <div className="member-row" key={member.id}>
           <div className="avatar">{member.email.slice(0, 2).toUpperCase()}</div>
           <div><strong>{member.email}</strong><span>В команде с {formatDate(member.joined_at)}</span></div>
           <span className={`role-pill role-pill--${member.role}`}>{roleLabel(member.role)}</span>
+			{canRemove(member) && <button className="icon-button icon-button--danger" type="button" onClick={() => setRemoveCandidate(member)} aria-label={`Удалить ${member.email}`} title="Удалить из команды"><Trash2 size={17} /></button>}
         </div>
       ))}
-    </div>
+		</div>
+		{removeMutation.isError && <div className="form-error" role="alert">{removeMutation.error.message}</div>}
+		<Modal open={Boolean(removeCandidate)} title="Удалить участника" description={removeCandidate ? `${removeCandidate.email} потеряет доступ к команде и перестанет быть исполнителем ее задач.` : ""} onClose={() => setRemoveCandidate(null)}>
+			<div className="modal__actions"><button className="button button--secondary" type="button" onClick={() => setRemoveCandidate(null)}>Отмена</button><button className="button button--danger" type="button" onClick={() => removeCandidate && removeMutation.mutate(removeCandidate.id)} disabled={removeMutation.isPending}>{removeMutation.isPending ? "Удаление..." : "Удалить"}</button></div>
+		</Modal>
+	</div>
   );
 }
 

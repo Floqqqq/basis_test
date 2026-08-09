@@ -86,6 +86,11 @@ func main() {
 			r.Get("/teams", teamHandler.List)
 			r.Get("/teams/{id}/members", teamHandler.Members)
 			r.Post("/teams/{id}/invite", teamHandler.Invite)
+			r.Delete("/teams/{id}/members/{user_id}", teamHandler.RemoveMember)
+			r.Post("/teams/{id}/leave-requests", teamHandler.RequestLeave)
+			r.Get("/teams/{id}/leave-requests", teamHandler.LeaveRequests)
+			r.Get("/teams/{id}/leave-request", teamHandler.OwnLeaveRequest)
+			r.Post("/teams/{id}/leave-requests/{request_id}/decision", teamHandler.ResolveLeaveRequest)
 
 			r.Post("/tasks", taskHandler.Create)
 			r.Get("/tasks", taskHandler.List)

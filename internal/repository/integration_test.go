@@ -141,6 +141,7 @@ func TestRepositoryIntegrationWithPostgresContainer(t *testing.T) {
 	assertTopUsersReport(t, ctx, db, teamID, ownerID)
 	assertInvalidAssigneesReport(t, ctx, db)
 	assertOutboxTransactionsAndClaims(t, ctx, db, tasks, teams, ownerID, outsiderID, teamID)
+	assertTeamMembershipManagement(t, ctx, db, users, teams, ownerID, teamID)
 }
 
 func applyMigrations(t *testing.T, ctx context.Context, db *sql.DB) {
@@ -187,6 +188,7 @@ func assertTablesExist(t *testing.T, ctx context.Context, db *sql.DB) {
 		"task_history":        false,
 		"task_comments":       false,
 		"notification_outbox": false,
+		"team_leave_requests": false,
 	}
 
 	rows, err := db.QueryContext(ctx, `
@@ -216,6 +218,115 @@ func assertTablesExist(t *testing.T, ctx context.Context, db *sql.DB) {
 		if !found {
 			t.Fatalf("table %s was not created", table)
 		}
+	}
+}
+
+func assertTeamMembershipManagement(
+	t *testing.T,
+	ctx context.Context,
+	db *sql.DB,
+	users *UserRepository,
+	teams *TeamRepository,
+	ownerID, teamID int64,
+) {
+	t.Helper()
+
+	adminID, err := users.Create(ctx, "membership-admin@example.com", "hash")
+	if err != nil {
+		t.Fatalf("create membership admin: %v", err)
+	}
+	leavingID, err := users.Create(ctx, "leaving-member@example.com", "hash")
+	if err != nil {
+		t.Fatalf("create leaving member: %v", err)
+	}
+	for _, invited := range []struct {
+		id   int64
+		role string
+	}{
+		{id: adminID, role: "admin"},
+		{id: leavingID, role: "member"},
+	} {
+		event := events.New(events.TeamMemberAdded, ownerID, events.TeamMemberPayload{
+			TeamID: teamID,
+			UserID: invited.id,
+			Role:   invited.role,
+		})
+		if err := teams.Invite(ctx, teamID, invited.id, invited.role, event); err != nil {
+			t.Fatalf("invite %s for membership test: %v", invited.role, err)
+		}
+	}
+
+	request, err := teams.CreateLeaveRequest(ctx, teamID, leavingID)
+	if err != nil {
+		t.Fatalf("CreateLeaveRequest() error = %v", err)
+	}
+	if _, err := teams.CreateLeaveRequest(ctx, teamID, leavingID); !errors.Is(err, ErrLeaveRequestExists) {
+		t.Fatalf("duplicate CreateLeaveRequest() error = %v, want ErrLeaveRequestExists", err)
+	}
+	for _, reviewerID := range []int64{ownerID, adminID} {
+		requests, err := teams.ListLeaveRequests(ctx, teamID, reviewerID)
+		if err != nil {
+			t.Fatalf("ListLeaveRequests(reviewer %d) error = %v", reviewerID, err)
+		}
+		if len(requests) != 1 || requests[0].ID != request.ID {
+			t.Fatalf("reviewer %d requests = %+v, want request %d", reviewerID, requests, request.ID)
+		}
+	}
+
+	start := make(chan struct{})
+	results := make(chan error, 2)
+	var reviewers sync.WaitGroup
+	for _, reviewerID := range []int64{ownerID, adminID} {
+		reviewerID := reviewerID
+		reviewers.Add(1)
+		go func() {
+			defer reviewers.Done()
+			<-start
+			results <- teams.ResolveLeaveRequest(ctx, teamID, request.ID, reviewerID, true)
+		}()
+	}
+	close(start)
+	reviewers.Wait()
+	close(results)
+
+	var successes, conflicts int
+	for err := range results {
+		switch {
+		case err == nil:
+			successes++
+		case errors.Is(err, ErrLeaveRequestHandled):
+			conflicts++
+		default:
+			t.Fatalf("concurrent ResolveLeaveRequest() unexpected error = %v", err)
+		}
+	}
+	if successes != 1 || conflicts != 1 {
+		t.Fatalf("concurrent resolutions: successes=%d conflicts=%d, want 1 and 1", successes, conflicts)
+	}
+	if member, err := teams.IsTeamMember(ctx, teamID, leavingID); err != nil || member {
+		t.Fatalf("approved leaving member membership = %v, %v; want false, nil", member, err)
+	}
+	requests, err := teams.ListLeaveRequests(ctx, teamID, ownerID)
+	if err != nil {
+		t.Fatalf("ListLeaveRequests(after resolution) error = %v", err)
+	}
+	if len(requests) != 0 {
+		t.Fatalf("pending requests after resolution = %+v, want empty", requests)
+	}
+
+	regularID, err := users.Create(ctx, "removed-member@example.com", "hash")
+	if err != nil {
+		t.Fatalf("create removable member: %v", err)
+	}
+	event := events.New(events.TeamMemberAdded, ownerID, events.TeamMemberPayload{TeamID: teamID, UserID: regularID, Role: "member"})
+	if err := teams.Invite(ctx, teamID, regularID, "member", event); err != nil {
+		t.Fatalf("invite removable member: %v", err)
+	}
+	if err := teams.RemoveMember(ctx, teamID, regularID, adminID); err != nil {
+		t.Fatalf("admin RemoveMember(member) error = %v", err)
+	}
+	if err := teams.RemoveMember(ctx, teamID, adminID, ownerID); err != nil {
+		t.Fatalf("owner RemoveMember(admin) error = %v", err)
 	}
 }
 
