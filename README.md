@@ -73,36 +73,27 @@ Web-приложение и REST API для управления задачам�
 
 ```text
 .
-├── cmd/
-│   ├── api/
-│   │   └── main.go
-│   └── worker/
-│       └── main.go
-├── internal/
-│   ├── cache/
-│   ├── config/
-│   ├── db/
-│   ├── events/
-│   ├── handlers/
-│   ├── middleware/
-│   ├── models/
-│   ├── notifications/
-│   ├── redis/
-│   ├── repository/
-│   └── service/
-├── migrations/
-│   ├── 001_init.sql
-│   └── 002_indexes.sql
+├── backend/
+│   ├── cmd/
+│   │   ├── api/
+│   │   └── worker/
+│   ├── internal/
+│   │   ├── handlers/
+│   │   ├── repository/
+│   │   └── service/
+│   ├── migrations/
+│   ├── Dockerfile
+│   ├── go.mod
+│   └── go.sum
 ├── frontend/
 │   ├── src/
 │   ├── Dockerfile
 │   └── package.json
-├── config.yaml
+├── monitoring/
+│   ├── prometheus/
+│   └── grafana/
 ├── docker-compose.yml
-├── Dockerfile
 ├── Makefile
-├── go.mod
-├── go.sum
 └── README.md
 ```
 
@@ -110,22 +101,23 @@ Web-приложение и REST API для управления задачам�
 
 | Путь                  | Назначение                                                                                             |
 | --------------------- | ------------------------------------------------------------------------------------------------------ |
-| `cmd/api`             | Точка входа приложения, сборка зависимостей, настройка router, запуск HTTP-сервера и graceful shutdown |
-| `cmd/worker`          | Асинхронная обработка outbox, worker metrics и graceful shutdown                                      |
-| `internal/config`     | Загрузка конфигурации из `config.yaml` и ENV                                                           |
-| `internal/db`         | Подключение к PostgreSQL, retry, connection pooling                                                    |
-| `internal/events`     | Типы domain events, metadata и payload                                                                 |
-| `internal/redis`      | Подключение к Redis с retry                                                                            |
-| `internal/cache`      | Redis-кеширование списка задач                                                                         |
-| `internal/handlers`   | HTTP handlers, валидация request body/query params, JSON-ответы                                        |
-| `internal/middleware` | JWT middleware, rate limiting, Prometheus middleware                                                   |
-| `internal/models`     | Основные модели данных                                                                                 |
-| `internal/notifications` | Recipient policy, email templates, SMTP sender, retry, worker и metrics                             |
-| `internal/repository` | Работа с PostgreSQL, транзакции и notification outbox                                                  |
-| `internal/service`    | Бизнес-логика, JWT/bcrypt, права доступа и формирование domain events                                  |
-| `internal/telemetry`  | OpenTelemetry SDK, OTLP exporter и HTTP instrumentation                                                |
-| `migrations`          | SQL-схема, связи и индексы                                                                             |
-| `frontend`            | React-приложение: страницы, API client, маршрутизация и стили                                          |
+| `backend/cmd/api`             | Точка входа API, настройка router, запуск HTTP-сервера и graceful shutdown                         |
+| `backend/cmd/worker`          | Асинхронная обработка outbox, worker metrics и graceful shutdown                                  |
+| `backend/internal/config`     | Загрузка конфигурации из YAML и ENV                                                               |
+| `backend/internal/db`         | Подключение к PostgreSQL, retry, connection pooling                                                |
+| `backend/internal/events`     | Типы domain events, metadata и payload                                                             |
+| `backend/internal/redis`      | Подключение к Redis с retry                                                                        |
+| `backend/internal/cache`      | Redis-кеширование списка задач                                                                     |
+| `backend/internal/handlers`   | HTTP handlers, валидация request body/query params и JSON-ответы                                   |
+| `backend/internal/middleware` | JWT middleware, rate limiting и Prometheus middleware                                              |
+| `backend/internal/models`     | Основные модели данных                                                                             |
+| `backend/internal/notifications` | Recipient policy, email templates, SMTP sender, retry, worker и metrics                         |
+| `backend/internal/repository` | Работа с PostgreSQL, транзакции и notification outbox                                              |
+| `backend/internal/service`    | Бизнес-логика, права доступа и формирование domain events                                           |
+| `backend/internal/telemetry`  | OpenTelemetry SDK, OTLP exporter и HTTP instrumentation                                            |
+| `backend/migrations`          | SQL-схема, связи и индексы                                                                         |
+| `frontend`                    | Самостоятельный npm-модуль React: страницы, API client, маршрутизация и стили                       |
+| `monitoring`                  | Конфигурация Prometheus и автоматически provisioned Grafana dashboard                              |
 
 ## Быстрый запуск
 
@@ -161,6 +153,17 @@ npm run dev
 
 Vite откроет интерфейс на `http://localhost:5173` и перенаправит запросы `/api` на backend по адресу `http://localhost:18080`.
 
+### Запуск backend для разработки
+
+Backend является отдельным Go-модулем:
+
+```bash
+cd backend
+go run ./cmd/api
+```
+
+Зависимости frontend и backend устанавливаются независимо: через `npm` в `frontend/` и через Go Modules в `backend/`. В корне проекта нет общего application-модуля, корень используется только для Docker Compose и общих команд.
+
 ## Порты по умолчанию
 
 | Сервис | Внутренний порт | Host-порт |
@@ -171,6 +174,8 @@ Vite откроет интерфейс на `http://localhost:5173` и пере�
 | Redis  |          `6379` |    `6380` |
 | OTLP Collector | `4317` | `4317` |
 | Jaeger UI |       `16686` | `16686` |
+| Prometheus UI |     `9090` | `9090` |
+| Grafana UI |        `3000` | `3001` |
 | Worker metrics |   `9091` | `19091` |
 | Mailpit SMTP |      `1025` | `1025` |
 | Mailpit UI |        `8025` | `8025` |
@@ -205,18 +210,21 @@ FRONTEND_HOST_PORT=3000 APP_HOST_PORT=18080 POSTGRES_HOST_PORT=5433 REDIS_HOST_P
 * OpenTelemetry Collector 0.157.0;
 * Jaeger 1.76.0.
 * Mailpit 1.30.7.
+* Prometheus 2.53.1;
+* Grafana 11.2.0 с автоматически подключённым dashboard.
 
 PostgreSQL и Redis имеют healthcheck. Приложение стартует после того, как PostgreSQL и Redis становятся healthy.
 
-SQL-миграции из директории `migrations/` автоматически применяются при первом создании контейнера PostgreSQL:
+SQL-миграции из директории `backend/migrations/` автоматически применяются при первом создании контейнера PostgreSQL:
 
 ```text
-migrations/001_init.sql
-migrations/002_indexes.sql
-migrations/003_task_comments_ordering_index.sql
-migrations/004_notification_outbox.sql
-migrations/005_outbox_worker_index.sql
-migrations/006_team_leave_requests.sql
+backend/migrations/001_init.sql
+backend/migrations/002_indexes.sql
+backend/migrations/003_task_comments_ordering_index.sql
+backend/migrations/004_notification_outbox.sql
+backend/migrations/005_outbox_worker_index.sql
+backend/migrations/006_team_leave_requests.sql
+backend/migrations/007_activity_events.sql
 ```
 
 Если база уже была создана раньше, PostgreSQL не применит init scripts повторно. Чтобы пересоздать БД с нуля:
@@ -230,10 +238,10 @@ docker compose up --build
 
 Проект поддерживает конфигурацию через YAML и ENV.
 
-Файл по умолчанию:
+Файл backend-модуля по умолчанию:
 
 ```text
-config.yaml
+backend/config.yaml
 ```
 
 Пример `config.yaml`:
@@ -258,6 +266,7 @@ worker_metrics_port: "9091"
 Путь к YAML-файлу можно переопределить:
 
 ```bash
+cd backend
 CONFIG_PATH=./config.yaml go run ./cmd/api
 ```
 
@@ -265,7 +274,7 @@ ENV-переменные имеют приоритет над YAML.
 
 | Переменная        | Описание                                     | Значение по умолчанию                                       |
 | ----------------- | -------------------------------------------- | ----------------------------------------------------------- |
-| `CONFIG_PATH`     | Путь к YAML-конфигу                          | `config.yaml`                                               |
+| `CONFIG_PATH`     | Путь к YAML-конфигу                          | `backend/config.yaml` при запуске из корня                   |
 | `APP_PORT`        | Порт HTTP-сервера внутри контейнера/процесса | `8080`                                                      |
 | `APP_HOST_PORT`   | Host-порт API в Docker Compose               | `18080`                                                     |
 | `FRONTEND_HOST_PORT` | Host-порт frontend в Docker Compose       | `3000`                                                      |
@@ -280,6 +289,10 @@ ENV-переменные имеют приоритет над YAML.
 | `OTEL_EXPORTER_OTLP_INSECURE` | Отключить TLS для локального OTLP | `true` |
 | `OTEL_COLLECTOR_GRPC_PORT` | Host-порт локального Collector | `4317` |
 | `JAEGER_UI_PORT` | Host-порт Jaeger UI | `16686` |
+| `PROMETHEUS_HOST_PORT` | Host-порт Prometheus UI | `9090` |
+| `GRAFANA_HOST_PORT` | Host-порт Grafana UI | `3001` |
+| `GRAFANA_ADMIN_USER` | Локальный администратор Grafana | `admin` |
+| `GRAFANA_ADMIN_PASSWORD` | Локальный пароль Grafana | `admin` |
 | `SMTP_HOST` | SMTP server host | `localhost` |
 | `SMTP_PORT` | SMTP server port | `1025` |
 | `SMTP_USERNAME` | SMTP username | пусто |
@@ -308,17 +321,18 @@ OTEL_EXPORTER_OTLP_INSECURE: "true"
 Схема создаётся миграцией:
 
 ```text
-migrations/001_init.sql
+backend/migrations/001_init.sql
 ```
 
 Индексы создаются миграциями:
 
 ```text
-migrations/002_indexes.sql
-migrations/003_task_comments_ordering_index.sql
-migrations/004_notification_outbox.sql
-migrations/005_outbox_worker_index.sql
-migrations/006_team_leave_requests.sql
+backend/migrations/002_indexes.sql
+backend/migrations/003_task_comments_ordering_index.sql
+backend/migrations/004_notification_outbox.sql
+backend/migrations/005_outbox_worker_index.sql
+backend/migrations/006_team_leave_requests.sql
+backend/migrations/007_activity_events.sql
 ```
 
 Основные таблицы:
@@ -333,6 +347,7 @@ migrations/006_team_leave_requests.sql
 | `task_comments` | Комментарии к задачам                                                           |
 | `notification_outbox` | События для асинхронной обработки уведомлений                              |
 | `team_leave_requests` | Заявки участников на выход из команды                                      |
+| `activity_events` | Постоянная пользовательская лента событий команды                               |
 
 Связи:
 
@@ -354,7 +369,7 @@ migrations/006_team_leave_requests.sql
 Индексы вынесены в миграцию:
 
 ```text
-migrations/002_indexes.sql
+backend/migrations/002_indexes.sql
 ```
 
 Они добавлены для ускорения:
@@ -672,6 +687,26 @@ Request body:
 
 Допустимые решения: `approve` и `reject`. Заявка блокируется на время обработки через PostgreSQL `FOR UPDATE`; после первого решения она исчезает из активного списка, а повторная попытка возвращает `409`.
 
+## Активность команды
+
+```text
+GET /api/v1/teams/{id}/activity?limit=20&offset=0
+```
+
+JWT нужен. Лента доступна только участникам команды и отсортирована по `created_at DESC, id DESC`. Она хранится в отдельной таблице `activity_events` и не использует transport-очередь `notification_outbox` как пользовательское хранилище.
+
+Каждая запись содержит тип события, автора, сущность, исходный payload, человекочитаемое сообщение и время. В интерфейсе лента находится во вкладке «Активность».
+
+## Real-time обновления
+
+```text
+GET /api/v1/teams/{id}/ws
+```
+
+WebSocket используется только как сигнал об изменении. JWT передаётся вторым значением WebSocket subprotocol после `access_token`; перед upgrade backend проверяет участие пользователя в команде. События другой команды в соединение не отправляются.
+
+Frontend автоматически переподключается после разрыва. При получении события он инвалидирует TanStack Query cache, после чего актуальные данные загружаются через REST API.
+
 ## Создание задачи
 
 ```text
@@ -974,20 +1009,47 @@ curl -s http://localhost:18080/api/v1/reports/invalid-assignees \
   -H "Authorization: Bearer $TOKEN"
 ```
 
-## Prometheus-метрики
+## Prometheus и Grafana
 
-Метрики доступны по endpoint:
+API и worker публикуют метрики в формате Prometheus. Prometheus автоматически собирает их внутри Docker-сети:
+
+| Target | Endpoint внутри Docker | Endpoint с хоста |
+| ------ | ---------------------- | ---------------- |
+| API | `app:8080/metrics` | `http://localhost:18080/metrics` |
+| Worker | `worker:9091/metrics` | `http://localhost:19091/metrics` |
+
+Prometheus UI и состояние targets:
 
 ```text
-GET /metrics
+http://localhost:9090
+http://localhost:9090/targets
 ```
 
-JWT не нужен.
+Готовый Grafana dashboard открывается автоматически:
+
+```text
+http://localhost:3001/d/task-manager-overview
+```
+
+Для локального запуска разрешён анонимный просмотр. Для редактирования можно войти с `admin` / `admin` или переопределить `GRAFANA_ADMIN_USER` и `GRAFANA_ADMIN_PASSWORD`.
+
+Dashboard показывает:
+
+* доступность API и worker;
+* HTTP throughput и ошибки;
+* p95 времени ответа по endpoint;
+* размер очереди outbox;
+* обработку notification events;
+* отправленные и неотправленные email;
+* количество goroutine API и worker.
+
+JWT для `/metrics` не нужен.
 
 Пример:
 
 ```bash
 curl -s http://localhost:18080/metrics
+curl -s http://localhost:19091/metrics
 ```
 
 Реализованные метрики:
@@ -997,6 +1059,11 @@ curl -s http://localhost:18080/metrics
 | `http_requests_total`           | Количество HTTP-запросов              |
 | `http_request_duration_seconds` | Histogram времени ответа              |
 | `http_errors_total`             | Количество HTTP-ошибок 4xx/5xx        |
+| `notification_processed_total`  | Успешно обработанные уведомления       |
+| `notification_failed_total`     | Ошибки обработки уведомлений           |
+| `email_sent_total`               | Отправленные email                     |
+| `email_failed_total`             | Ошибки отправки email                  |
+| `outbox_pending`                 | События, ожидающие обработки           |
 | Go/process metrics              | Стандартные метрики Prometheus client |
 
 ## OpenTelemetry tracing
@@ -1007,7 +1074,7 @@ curl -s http://localhost:18080/metrics
 task-manager-api -> OpenTelemetry Collector -> Jaeger
 ```
 
-Prometheus-метрики продолжают работать независимо через `GET /metrics`.
+Prometheus-метрики продолжают работать независимо от tracing через `GET /metrics`.
 
 При запуске через Docker Compose tracing включён автоматически. Jaeger UI доступен по адресу:
 
@@ -1018,6 +1085,7 @@ http://localhost:16686
 Для локального запуска приложения без Collector tracing по умолчанию выключен. Его можно включить так:
 
 ```bash
+cd backend
 OTEL_ENABLED=true \
 OTEL_EXPORTER_OTLP_ENDPOINT=localhost:4317 \
 OTEL_EXPORTER_OTLP_INSECURE=true \
@@ -1121,7 +1189,7 @@ Response body:
 
 `OutboxRepository` поддерживает конкурентную выборку событий через `FOR UPDATE SKIP LOCKED`, lease для зависших `processing` событий, статусы обработки и metadata для повторной попытки.
 
-Отдельный процесс `cmd/worker` получает события batch-ами и передаёт их в `NotificationService`. Получатели, исключение actor и удаление дубликатов определяются централизованно. SMTP скрыт за интерфейсом `EmailSender`; API request не ждёт отправку письма.
+Отдельный процесс `backend/cmd/worker` получает события batch-ами и передаёт их в `NotificationService`. Получатели, исключение actor и удаление дубликатов определяются централизованно. SMTP скрыт за интерфейсом `EmailSender`; API request не ждёт отправку письма.
 
 Временные ошибки используют exponential backoff: 5 секунд, 30 секунд, 2 минуты, 10 минут и 30 минут. После пяти неудачных попыток событие получает терминальный статус `failed`.
 
@@ -1279,7 +1347,7 @@ curl -s http://localhost:18080/metrics
 Запуск всех тестов:
 
 ```bash
-go test ./...
+(cd backend && go test ./...)
 ```
 
 Запуск тестов с отчётом покрытия:
@@ -1291,18 +1359,18 @@ make test-cover
 Команда `make test-cover` запускает тесты по основным пакетам приложения:
 
 ```text
-./internal/cache
-./internal/config
-./internal/handlers
-./internal/middleware
-./internal/repository
-./internal/service
+./backend/internal/cache
+./backend/internal/config
+./backend/internal/handlers
+./backend/internal/middleware
+./backend/internal/repository
+./backend/internal/service
 ```
 
 После запуска выводится подробный отчёт:
 
 ```bash
-go tool cover -func=coverage.out
+(cd backend && go tool cover -func=coverage.out)
 ```
 
 На последней локальной проверке тесты успешно проходят, а общее покрытие по основным пакетам составляет около:
@@ -1313,12 +1381,12 @@ go tool cover -func=coverage.out
 
 Важно: в ТЗ указано требование минимум 85% покрытия по критическим методам. Текущий проект содержит тесты и рабочий отчёт покрытия, но фактическое покрытие пока ниже 85%. Для полного формального соответствия этому пункту нужно дополнительно покрыть тестами:
 
-* `internal/handlers/reports.go`;
-* `internal/repository/reports.go`;
-* `internal/handlers/tasks.go`;
-* `internal/handlers/teams.go`;
-* `internal/middleware/metrics.go`;
-* часть методов `internal/repository`.
+* `backend/internal/handlers/reports.go`;
+* `backend/internal/repository/reports.go`;
+* `backend/internal/handlers/tasks.go`;
+* `backend/internal/handlers/teams.go`;
+* `backend/internal/middleware/metrics.go`;
+* часть методов `backend/internal/repository`.
 
 Integration-тесты используют PostgreSQL 16 через `testcontainers`, поэтому для их запуска должен быть включён Docker Desktop.
 
@@ -1331,8 +1399,8 @@ make test-integration
 Полный локальный цикл проверки:
 
 ```bash
-go mod tidy
-go test ./...
+(cd backend && go mod tidy)
+(cd backend && go test ./...)
 make test-cover
 docker compose up --build
 ```
@@ -1342,19 +1410,19 @@ docker compose up --build
 Форматирование:
 
 ```bash
-gofmt -w .
+gofmt -w backend
 ```
 
 Проверка зависимостей:
 
 ```bash
-go mod tidy
+(cd backend && go mod tidy)
 ```
 
 Статический анализ:
 
 ```bash
-go vet ./...
+(cd backend && go vet ./...)
 ```
 
 Проверка Docker Compose:
@@ -1366,11 +1434,11 @@ docker compose config
 Полный цикл:
 
 ```bash
-gofmt -w .
-go mod tidy
-go test ./...
+gofmt -w backend
+(cd backend && go mod tidy)
+(cd backend && go test ./...)
 make test-cover
-go vet ./...
+(cd backend && go vet ./...)
 docker compose config
 docker compose up --build
 ```
@@ -1386,7 +1454,7 @@ make test
 Запускает:
 
 ```bash
-go test ./...
+(cd backend && go test ./...)
 ```
 
 ```bash
@@ -1512,8 +1580,8 @@ curl -s http://localhost:18080/api/v1/teams \
 | Go                         | Выполнено              | Backend написан на Go                                                           |
 | PostgreSQL                 | Выполнено              | Используется PostgreSQL 16                                                      |
 | Redis                      | Выполнено              | Используется для кеша и rate limiting                                           |
-| Docker                     | Выполнено              | Есть Dockerfile                                                                 |
-| Docker Compose             | Выполнено              | Поднимает app, worker, frontend, PostgreSQL, Redis, tracing и Mailpit           |
+| Docker                     | Выполнено              | Backend и frontend имеют отдельные Dockerfile                                  |
+| Docker Compose             | Выполнено              | Поднимает приложение, хранилища, tracing, Prometheus, Grafana и Mailpit         |
 | Git                        | Выполнено              | Проект готов для хранения в Git                                                 |
 | Регистрация                | Выполнено              | `POST /api/v1/register`                                                         |
 | Аутентификация             | Выполнено              | `POST /api/v1/login`, JWT                                                       |
@@ -1527,7 +1595,7 @@ curl -s http://localhost:18080/api/v1/teams \
 | Проверка связанных таблиц  | Выполнено              | `GET /api/v1/reports/invalid-assignees`                                         |
 | Redis cache TTL 5 минут    | Выполнено              | Кеш списка задач                                                                |
 | Индексы PostgreSQL         | Выполнено              | Миграции `002_indexes.sql`-`005_outbox_worker_index.sql`                        |
-| Connection pooling         | Выполнено              | Настроено в `internal/db/postgres.go`                                           |
+| Connection pooling         | Выполнено              | Настроено в `backend/internal/db/postgres.go`                                   |
 | Пагинация на уровне БД     | Выполнено              | `LIMIT/OFFSET`                                                                  |
 | Unit-тесты                 | Выполнено              | Есть тесты сервисов, handlers, middleware, repository                           |
 | Integration-тесты с PostgreSQL | Выполнено          | Используется `testcontainers`                                                   |
@@ -1536,8 +1604,9 @@ curl -s http://localhost:18080/api/v1/teams \
 | Email worker               | Выполнено              | Асинхронная SMTP-доставка, retry, max attempts и graceful shutdown              |
 | Rate limiting              | Выполнено              | 100 запросов/мин; IP для register/login, user_id для защищённых endpoint        |
 | Graceful shutdown          | Выполнено              | `SIGINT/SIGTERM`, timeout 10 секунд                                             |
-| Prometheus metrics         | Выполнено              | API `/metrics` и worker `:19091/metrics`                                        |
-| Config YAML/ENV            | Выполнено              | `config.yaml` + ENV override                                                    |
+| Prometheus metrics         | Выполнено              | Prometheus собирает API и worker metrics                                        |
+| Grafana dashboard          | Выполнено              | Dashboard provisioned автоматически и доступен на порту `3001`                  |
+| Config YAML/ENV            | Выполнено              | `backend/config.yaml` + ENV override                                            |
 
 ## Финальный результат
 
@@ -1555,7 +1624,7 @@ http://localhost:18080
 
 База данных PostgreSQL и Redis поднимаются автоматически через Docker Compose.
 
-Миграции из директории `migrations/` применяются при первом старте PostgreSQL-контейнера.
+Миграции из директории `backend/migrations/` применяются при первом старте PostgreSQL-контейнера.
 
 Основные сценарии проверки:
 

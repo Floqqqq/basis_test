@@ -8,6 +8,7 @@ import { AsyncState } from "../components/AsyncState";
 import { Modal } from "../components/Modal";
 import { StatusBadge } from "../components/StatusBadge";
 import { useCurrentUser } from "../hooks/useCurrentUser";
+import { useTeamRealtime } from "../hooks/useTeamRealtime";
 import { formatDate } from "../lib/format";
 import type { Task, TaskStatus, TeamMember } from "../types/api";
 import { teamsQueryKey } from "./TeamsPage";
@@ -23,6 +24,7 @@ export function TaskPage() {
   const taskQuery = useQuery({ queryKey: ["task", taskId], queryFn: () => tasksApi.get(taskId), enabled: validTaskId });
   const teamsQuery = useQuery({ queryKey: teamsQueryKey, queryFn: teamsApi.list });
   const team = teamsQuery.data?.find((item) => item.id === taskQuery.data?.team_id);
+	useTeamRealtime(taskQuery.data?.team_id);
   const membersQuery = useQuery({
     queryKey: ["team-members", taskQuery.data?.team_id],
     queryFn: () => teamsApi.members(taskQuery.data!.team_id),

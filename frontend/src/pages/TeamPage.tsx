@@ -5,10 +5,12 @@ import { useMutation, useQuery, useQueryClient, type UseQueryResult } from "@tan
 import { teamsApi } from "../api/teams";
 import { tasksApi } from "../api/tasks";
 import { AsyncState } from "../components/AsyncState";
+import { ActivityFeed } from "../components/ActivityFeed";
 import { Modal } from "../components/Modal";
 import { StatusBadge } from "../components/StatusBadge";
 import { formatDate, roleLabel } from "../lib/format";
 import { useCurrentUser } from "../hooks/useCurrentUser";
+import { useTeamRealtime } from "../hooks/useTeamRealtime";
 import type { TaskFilters, TaskStatus, TeamLeaveRequest, TeamMember, TeamRole } from "../types/api";
 import { teamsQueryKey } from "./TeamsPage";
 
@@ -19,7 +21,8 @@ export function TeamPage() {
   const teamId = Number(teamIdParam);
   const validTeamId = Number.isInteger(teamId) && teamId > 0;
   const [searchParams, setSearchParams] = useSearchParams();
-  const activeTab = searchParams.get("tab") === "members" ? "members" : "tasks";
+  const requestedTab = searchParams.get("tab");
+  const activeTab = requestedTab === "members" || requestedTab === "activity" ? requestedTab : "tasks";
   const [status, setStatus] = useState<TaskStatus | "">("");
   const [assigneeId, setAssigneeId] = useState("");
   const [offset, setOffset] = useState(0);
@@ -27,6 +30,7 @@ export function TeamPage() {
   const [inviteOpen, setInviteOpen] = useState(false);
   const queryClient = useQueryClient();
 	const currentUserQuery = useCurrentUser();
+	useTeamRealtime(validTeamId ? teamId : undefined);
 
   const teamsQuery = useQuery({ queryKey: teamsQueryKey, queryFn: teamsApi.list });
   const team = teamsQuery.data?.find((item) => item.id === teamId);
@@ -131,6 +135,7 @@ export function TeamPage() {
       <div className="tabs" role="tablist" aria-label="Разделы команды">
         <button className={activeTab === "tasks" ? "active" : ""} onClick={() => setSearchParams({ tab: "tasks" })} role="tab">Задачи</button>
         <button className={activeTab === "members" ? "active" : ""} onClick={() => setSearchParams({ tab: "members" })} role="tab">Участники</button>
+		<button className={activeTab === "activity" ? "active" : ""} onClick={() => setSearchParams({ tab: "activity" })} role="tab">Активность</button>
       </div>
 
       {activeTab === "tasks" ? (
@@ -148,7 +153,7 @@ export function TeamPage() {
           onPrevious={() => setOffset((value) => Math.max(0, value - PAGE_SIZE))}
           onNext={() => setOffset((value) => value + PAGE_SIZE)}
         />
-      ) : (
+	) : activeTab === "members" ? (
 		<MembersSection
 			teamId={teamId}
 			currentUserId={currentUserQuery.data?.id}
@@ -156,6 +161,8 @@ export function TeamPage() {
 			membersQuery={membersQuery}
 			leaveRequestsQuery={leaveRequestsQuery}
 		/>
+	) : (
+		<ActivityFeed teamId={teamId} />
       )}
 
 		{requestLeaveMutation.isError && <div className="form-error" role="alert">{requestLeaveMutation.error.message}</div>}

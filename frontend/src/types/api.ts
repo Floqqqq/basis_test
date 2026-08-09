@@ -1,5 +1,6 @@
 export type TeamRole = "owner" | "admin" | "member";
 export type TaskStatus = "todo" | "in_progress" | "done";
+export type DomainEventType = "task.created" | "task.updated" | "task.assigned" | "task.status_changed" | "team.member_added";
 
 export interface AuthResponse {
   user_id: number;
@@ -35,6 +36,27 @@ export interface TeamLeaveRequest {
   role: TeamRole;
   status: "pending";
   requested_at: string;
+}
+
+export interface ActivityEvent {
+  id: number;
+  team_id: number;
+  actor_id: number;
+  actor_email: string;
+  event_type: DomainEventType;
+  entity_type: "task" | "team_member";
+  entity_id: number;
+  payload: Record<string, unknown>;
+  message: string;
+  created_at: string;
+}
+
+export interface RealtimeEvent {
+  event_type: DomainEventType;
+  team_id: number;
+  entity_type: "task" | "team_member";
+  entity_id: number;
+  occurred_at: string;
 }
 
 export interface Task {

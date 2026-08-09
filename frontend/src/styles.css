@@ -758,6 +758,47 @@ p {
   padding: 18px 16px;
 }
 
+.activity-feed {
+  border: 1px solid var(--line);
+  background: var(--surface);
+}
+
+.activity-row {
+  min-height: 70px;
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  padding: 13px 16px;
+  border-bottom: 1px solid #e7ecea;
+}
+
+.activity-row:last-child {
+  border-bottom: 0;
+}
+
+.activity-row__icon {
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  border-radius: 6px;
+  background: var(--mint);
+  color: var(--forest);
+}
+
+.activity-row p {
+  margin-bottom: 5px;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.activity-row time {
+  color: var(--muted);
+  font-size: 11px;
+}
+
 .member-row:last-child {
   border-bottom: 0;
 }
